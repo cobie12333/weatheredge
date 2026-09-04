@@ -1,1 +1,28 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+logs/
+
+# Generated research output
+outputs/
+results/
+.cache/
+
+# Local AI/tool files
 .aider*
