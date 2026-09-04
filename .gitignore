@@ -4,44 +4,23 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-*.py~
-
-# Logs
-*.log
-logs/
-
-# Environment
+.Python
+env/
+venv/
+.venv/
+.ENV
 .env
-.env.local
 .env.*
+.venv.bak/
+.ENV.bak/
+.python-version
 
-# Database
-*.db
-
-# Build artifacts
+# Build and distribution artifacts
 build/
 dist/
 *.egg-info/
-
-# Dependencies
-.venv/
-venv/
-pip-log.txt
-pip-selfcheck.json
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Backup files
-*.bak
-*.swp
-*.swo
+*.whl
+*.egg
 
 # Testing
 .coverage
@@ -49,11 +28,23 @@ htmlcov/
 .coverage.*
 .cache
 .pytest_cache/
-.mypy_cache/
+.hypothesis/
 
 # IDE
 .vscode/
 .idea/
-*.sublime-project
-*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
 ```
