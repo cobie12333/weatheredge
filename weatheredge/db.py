@@ -6,8 +6,10 @@ from datetime import datetime, timezone, timedelta
 
 from config.settings import DB_PATH, SCHEMA_PATH, LOG_DIR
 
+
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return a lossless UTC receive timestamp for latency-sensitive data."""
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def get_connection() -> sqlite3.Connection:
