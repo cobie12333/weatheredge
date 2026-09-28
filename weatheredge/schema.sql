@@ -1,31 +1,33 @@
--- WeatherEdge Research Platform — Schema v2.0
--- Canonical schema. Migrations remain available for legacy databases.
--- Design law: raw observations and market snapshots are INSERT-only.
+-- WeatherEdge Research Platform — Schema v2.1
+-- Raw observations and market snapshots are INSERT-only.
+-- fetched_at is the local receive time. source_updated_at is optional
+-- and must only be populated when the upstream payload provides it.
 
 PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS metar_obs (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    fetched_at    TEXT NOT NULL,
-    obs_time      TEXT,
-    receipt_time  TEXT,
-    temp_c        REAL,
-    raw_metar     TEXT NOT NULL,
-    report_type   TEXT DEFAULT 'METAR',
-    source        TEXT DEFAULT 'live',
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetched_at        TEXT NOT NULL,
+    obs_time          TEXT,
+    receipt_time      TEXT,
+    temp_c            REAL,
+    raw_metar         TEXT NOT NULL,
+    report_type       TEXT DEFAULT 'METAR',
+    source            TEXT DEFAULT 'live',
     UNIQUE(obs_time)
 );
 
 CREATE TABLE IF NOT EXISTS market_price (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    fetched_at        TEXT NOT NULL,
-    market_date       TEXT NOT NULL,
-    bucket_label      TEXT NOT NULL,
-    yes_price_cents   REAL,
-    no_price_cents    REAL,
-    volume_usd        REAL,
-    raw_payload       TEXT NOT NULL,
-    source            TEXT DEFAULT 'live',
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    fetched_at          TEXT NOT NULL,
+    source_updated_at   TEXT,
+    market_date         TEXT NOT NULL,
+    bucket_label        TEXT NOT NULL,
+    yes_price_cents     REAL,
+    no_price_cents      REAL,
+    volume_usd          REAL,
+    raw_payload         TEXT NOT NULL,
+    source              TEXT DEFAULT 'live',
     UNIQUE(fetched_at, market_date, bucket_label, source)
 );
 
