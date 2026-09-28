@@ -1,11 +1,10 @@
 import json
-import os
 import sys
 import urllib.request
 import urllib.error
 from datetime import date, datetime, timezone
 
-from config.settings import GAMMA_API_BASE, HTTP_TIMEOUT_SECONDS, USER_AGENT, TRACKED_BUCKET_COUNT
+from config.settings import GAMMA_API_BASE, HTTP_TIMEOUT_SECONDS, USER_AGENT
 from db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
 
 logger = setup_logger("market_collector")
@@ -26,12 +25,24 @@ def fetch_event(slug: str) -> dict:
     return data
 
 
-def extract_top_buckets(event: dict, top_n: int) -> list:
+def source_timestamp(payload: dict):
+    """Return an upstream timestamp if the API exposes one; never invent it."""
+    for key in ("updatedAt", "updated_at", "lastUpdated", "last_updated"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def extract_buckets(event: dict) -> list:
+    """Extract every market outcome returned by Gamma; never truncate the universe."""
     markets = event.get("markets", [])
     if not markets:
         return []
 
+    event_updated_at = source_timestamp(event)
     parsed = []
+
     for m in markets:
         try:
             volume = float(m.get("volume", 0) or 0)
@@ -54,19 +65,11 @@ def extract_top_buckets(event: dict, top_n: int) -> list:
             "yes_price_cents": yes_price,
             "no_price_cents": no_price,
             "volume_usd": volume,
-            "raw_payload": json.dumps(m),
+            "source_updated_at": source_timestamp(m) or event_updated_at,
+            "raw_payload": json.dumps(m, separators=(",", ":")),
         })
 
-    # Sort by price relevance (distance from 0/100), NOT volume.
-    # Dead buckets can carry stale high volume from earlier in the day
-    # while sitting at a near-zero price. Price is the correct signal
-    # for "is this bucket still contested right now."
-    def relevance(bucket):
-        p = bucket["yes_price_cents"] or 0
-        return min(p, 100 - p)
-
-    parsed.sort(key=relevance, reverse=True)
-    return parsed[:top_n]
+    return parsed
 
 
 def run(target_date: date = None) -> int:
@@ -97,7 +100,7 @@ def run(target_date: date = None) -> int:
             log_collection_attempt(con, "market", success=False, error_msg=msg)
             return 0
 
-        buckets = extract_top_buckets(event, TRACKED_BUCKET_COUNT)
+        buckets = extract_buckets(event)
 
         if not buckets:
             msg = f"Event found but no market buckets extracted for slug={slug}"
@@ -105,6 +108,8 @@ def run(target_date: date = None) -> int:
             log_collection_attempt(con, "market", success=False, error_msg=msg)
             return 0
 
+        # This is the time WeatherEdge received the response.
+        # Keep it separate from any upstream timestamp exposed by Gamma.
         fetched_at = utc_now_iso()
         rows_written = 0
 
@@ -113,19 +118,26 @@ def run(target_date: date = None) -> int:
                 con.execute(
                     """
                     INSERT INTO market_price
-                    (fetched_at, market_date, bucket_label, yes_price_cents,
-                     no_price_cents, volume_usd, raw_payload)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (fetched_at, source_updated_at, market_date, bucket_label,
+                     yes_price_cents, no_price_cents, volume_usd, raw_payload)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (fetched_at, market_date_str, b["bucket_label"], b["yes_price_cents"],
-                     b["no_price_cents"], b["volume_usd"], b["raw_payload"]),
+                    (
+                        fetched_at,
+                        b["source_updated_at"],
+                        market_date_str,
+                        b["bucket_label"],
+                        b["yes_price_cents"],
+                        b["no_price_cents"],
+                        b["volume_usd"],
+                        b["raw_payload"],
+                    ),
                 )
                 rows_written += 1
-            con.commit()
 
+            con.commit()
             logger.info(
-                f"Saved {rows_written} buckets for {market_date_str}: "
-                + ", ".join(f"{b['bucket_label']}={b['yes_price_cents']}c" for b in buckets)
+                f"Saved {rows_written} complete market outcomes for {market_date_str}"
             )
             log_collection_attempt(con, "market", success=True, rows_written=rows_written)
             return rows_written
