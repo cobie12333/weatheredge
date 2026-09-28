@@ -1,0 +1,26 @@
+name: Decode SAWS BUFR sample
+
+on:
+  push:
+    branches:
+      - feature/settlement-and-imatros5-fusion
+
+jobs:
+  decode-saws-bufr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ecCodes
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeccodes-tools python3-eccodes
+      - name: Decode SAWS sample
+        run: |
+          cat > /tmp/fact.bufr.b64 <<'EOF'
+          QlVGUgAA9wQAABYAABgAAAAAAAAAIgAH6gUDCgAAAAALAAABgMGWx1AAAMoABOIAAANjg5OTkAAAAAAAAAAAAAAInzoaoWoKupgAAAAAAAAAAAAAAAAAAP1KGoAqwAKl4UQBFsCLZPB//75R/+E0BPyAZDiNuFH/AMj/+AMn////////////gAAP/yP+T/////////////////////X///f//+/R/8AZP////////AMh+iABxL36IAHAXA+jBP7UADP7+3/BSfE//////v0f/7///////////////////9+j//////////////////////+ANzc3Nw==
+          EOF
+          base64 -d /tmp/fact.bufr.b64 > /tmp/fact.bufr
+          bufr_dump -p /tmp/fact.bufr > /tmp/fact.txt
+          cat /tmp/fact.txt
+          echo "---- KEYS ----"
+          bufr_dump -j -p /tmp/fact.bufr | grep -Ei 'airTemperature|temperature|dewpoint|humidity|windSpeed|windDirection|pressure|station|datetime|year|month|day|hour|minute' || true
