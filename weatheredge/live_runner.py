@@ -47,8 +47,8 @@ def run_forever():
                 market_collector.run(icao=icao)
                 last_market[icao] = now
 
-        if now - last_pws >= 60 * 60:
-            logger.info("polling enabled PWS")
+        if now - last_pws >= 5 * 60:
+            logger.info("polling live PWS")
             pws_multi_collector.run()
             last_pws = now
 
