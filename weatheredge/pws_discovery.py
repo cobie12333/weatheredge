@@ -1,7 +1,7 @@
 """Discover nearby Weather Company PWS stations into the WeatherEdge registry."""
-import pws_api
-from airports import AIRPORTS
-from db import get_connection
+from . import pws_api
+from .airports import AIRPORTS
+from .db import get_connection
 
 def run():
     key = pws_api.api_key()
