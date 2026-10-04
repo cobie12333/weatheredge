@@ -62,8 +62,14 @@ def get_airport_rows():
             ).fetchall()
 
             pws = con.execute(
-                """SELECT station_id, name, distance_km, status, enabled, source_url
-                   FROM pws_station
+                """SELECT s.station_id, s.name, s.distance_km, s.status, s.enabled, s.source_url,
+                          o.temp_c, o.obs_time
+                   FROM pws_station s
+                   LEFT JOIN pws_obs_multi o ON o.id = (
+                       SELECT x.id FROM pws_obs_multi x
+                       WHERE x.station_id = s.station_id
+                       ORDER BY x.obs_time DESC LIMIT 1
+                   )
                    WHERE airport_icao = ? AND verified = 1
                    ORDER BY distance_km ASC""",
                 (station,),
@@ -111,7 +117,8 @@ def render(rows):
         pws_html = "".join(
             f'<a href="{html.escape(p["source_url"], quote=True)}" target="_blank" rel="noreferrer">'
             f'{html.escape(p["station_id"])} {html.escape(p["name"] or "")} '
-            f'({p["distance_km"]:.1f}km, {html.escape(p["status"])})</a>'
+            f'({p["distance_km"]:.1f}km, {html.escape(p["status"])}; '
+            f'{_fmt(p["temp_c"], "°C")})</a>'
             for p in r["pws"]
         ) or '<span class="muted">No verified nearby PWS in registry</span>'
 
