@@ -5,14 +5,14 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from airports import AIRPORTS
-from config.settings import MARKET_POLL_MINUTES_DAYTIME, MARKET_POLL_MINUTES_NIGHT, METAR_POLL_MINUTES
-from db import setup_logger
-import market_collector
-import multi_metar_collector
-import pws_discovery
-import pws_multi_collector
-import pws_rapid_collector
+from .airports import AIRPORTS
+from .config.settings import MARKET_POLL_MINUTES_DAYTIME, MARKET_POLL_MINUTES_NIGHT, METAR_POLL_MINUTES
+from .db import setup_logger
+from . import market_collector
+from . import multi_metar_collector
+from . import pws_discovery
+from . import pws_multi_collector
+from . import pws_rapid_collector
 
 logger = setup_logger("live_runner")
 
