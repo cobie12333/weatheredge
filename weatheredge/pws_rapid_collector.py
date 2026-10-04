@@ -6,9 +6,9 @@ import os
 import urllib.error
 from datetime import datetime, timezone
 
-from config.settings import HTTP_TIMEOUT_SECONDS
-from db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
-from pws_api import rapid_1day
+from .config.settings import HTTP_TIMEOUT_SECONDS
+from .db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
+from .pws_api import rapid_1day
 
 logger = setup_logger("pws_rapid_collector")
 
