@@ -6,10 +6,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-from airports import AIRPORTS
-from config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
-from db import get_connection, init_schema, log_collection_attempt, setup_logger, utc_now_iso
-from pws_registry import PWS_STATIONS
+from .airports import AIRPORTS
+from .config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
+from .db import get_connection, init_schema, log_collection_attempt, setup_logger, utc_now_iso
+from .pws_registry import PWS_STATIONS
 
 logger = setup_logger("multi_metar_collector")
 
