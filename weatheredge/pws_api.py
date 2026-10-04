@@ -10,7 +10,7 @@ import os
 import urllib.parse
 import urllib.request
 
-from config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
+from .config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
 
 BASE_V2 = "https://api.weather.com/v2"
 BASE_V3 = "https://api.weather.com/v3"
