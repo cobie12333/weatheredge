@@ -143,6 +143,48 @@ def _bucket_mid(label):
         return (nums[0]+nums[1])/2.0
     return nums[0]
 
+
+def replay(icao, market_date):
+    """Return a complete local calendar day for synchronized historical replay."""
+    airport = _airport(icao)
+    if not airport:
+        return {"error": "unknown airport"}
+    try:
+        day = datetime.fromisoformat(market_date).date()
+    except ValueError:
+        return {"error": "date must be YYYY-MM-DD"}
+    local = ZoneInfo(airport["tz"])
+    start_local = datetime(day.year, day.month, day.day, tzinfo=local)
+    end_local = datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=local)
+    start = start_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = end_local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    con = get_connection(readonly=True)
+    try:
+        pws = con.execute("""SELECT station_id,name,latitude,longitude,distance_km,status,verified
+                             FROM pws_station WHERE airport_icao=? ORDER BY distance_km""",(icao,)).fetchall()
+        metar = con.execute("""SELECT obs_time,temp_c,dewpoint_c,wind_dir_deg,wind_speed_kt,pressure_hpa,raw_metar
+                               FROM metar_multi WHERE station_id=? AND obs_time>=? AND obs_time<=?
+                               ORDER BY obs_time""",(icao,start,end)).fetchall()
+        observations = con.execute("""SELECT station_id,obs_time,temp_c,humidity,dewpoint_c,wind_dir_deg,wind_speed_kt,
+                                             pressure_hpa,distance_km,is_valid
+                                      FROM pws_obs_multi WHERE airport_icao=? AND obs_time>=? AND obs_time<=?
+                                      ORDER BY obs_time""",(icao,start,end)).fetchall()
+        markets = con.execute("""SELECT bucket_label,yes_price_cents,no_price_cents,volume_usd,fetched_at
+                                 FROM market_price_multi WHERE station_id=? AND market_date=? AND fetched_at>=? AND fetched_at<=?
+                                 ORDER BY fetched_at,bucket_label""",(icao,market_date,start,end)).fetchall()
+        forecasts = con.execute("""SELECT fetched_at,valid_time,lead_hours,model,temp_c,source
+                                    FROM forecast_history_multi WHERE station_id=? AND valid_time>=? AND valid_time<=?
+                                    ORDER BY fetched_at,valid_time""",(icao,start,end)).fetchall()
+        outcome = con.execute("""SELECT actual_max_c,source_url FROM outcome_multi
+                                 WHERE station_id=? AND market_date=? LIMIT 1""",(icao,market_date)).fetchone()
+        return {"icao":icao,"city":airport["city"],"market_date":market_date,"timezone":airport["tz"],
+                "replay_start_utc":start,"airport":{"lat":airport["lat"],"lon":airport["lon"]},
+                "stations":[dict(r) for r in pws],"metar":[dict(r) for r in metar],
+                "pws":[dict(r) for r in observations],"markets":[dict(r) for r in markets],
+                "forecasts":[dict(r) for r in forecasts],"outcome":dict(outcome) if outcome else None}
+    finally:
+        con.close()
+
 def trading(icao, market_date=None):
     airport=_airport(icao)
     if not airport: return {"error":"unknown airport"}
@@ -187,6 +229,12 @@ def handle(path):
             return 400, {"error": "hours must be an integer"}
     if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "sensor-comparison":
         return 200, comparison(parts[2])
+    if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "replay":
+        q = parse_qs(parsed.query)
+        date = q.get("date", [None])[0]
+        if not date:
+            return 400, {"error": "date is required"}
+        return 200, replay(parts[2], date)
     if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "trading":
         q = parse_qs(parsed.query)
         return 200, trading(parts[2], q.get("date", [None])[0])
