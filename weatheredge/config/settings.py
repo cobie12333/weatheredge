@@ -9,7 +9,7 @@ METAR_STATION_ID = "FACT"
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 
-TRACKED_BUCKET_COUNT = 3
+TRACKED_BUCKET_COUNT = 0  # 0 = retain every market bucket
 
 METAR_POLL_MINUTES = 30
 MARKET_POLL_MINUTES_DAYTIME = 15
