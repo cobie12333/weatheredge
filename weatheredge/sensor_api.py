@@ -2,6 +2,9 @@
 """JSON endpoints for WeatherEdge sensor time series and comparison."""
 
 import json
+import math
+import re
+from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
@@ -133,6 +136,45 @@ def comparison(icao):
         con.close()
 
 
+def _bucket_mid(label):
+    nums=[float(x) for x in re.findall(r"(?<!\d)(-?\d+(?:\.\d+)?)", str(label or ""))]
+    if not nums: return None
+    if len(nums)>=2 and any(x in str(label) for x in ("-","to","–","—")):
+        return (nums[0]+nums[1])/2.0
+    return nums[0]
+
+def trading(icao, market_date=None):
+    airport=_airport(icao)
+    if not airport: return {"error":"unknown airport"}
+    if market_date is None:
+        market_date=datetime.now(timezone.utc).astimezone(ZoneInfo(airport["tz"])).date().isoformat()
+    con=get_connection(readonly=True)
+    try:
+        forecast=con.execute("SELECT temp_c,model,valid_time,fetched_at FROM forecast_history_multi WHERE station_id=? AND date(valid_time)=? AND temp_c IS NOT NULL ORDER BY fetched_at DESC LIMIT 1",(icao,market_date)).fetchone()
+        markets=con.execute("SELECT bucket_label,yes_price_cents,volume_usd,fetched_at FROM market_price_multi WHERE station_id=? AND market_date=? AND yes_price_cents IS NOT NULL ORDER BY fetched_at DESC",(icao,market_date)).fetchall()
+        if not forecast:
+            return {"icao":icao,"city":airport["city"],"market_date":market_date,"status":"NO_FORECAST","market":[]}
+        rows=con.execute("SELECT f.temp_c,o.actual_max_c FROM forecast_history_multi f JOIN outcome_multi o ON o.station_id=f.station_id AND o.market_date=? WHERE f.station_id=? AND f.valid_time LIKE ? AND f.temp_c IS NOT NULL",(market_date,icao,market_date+"%")).fetchall()
+        errs=[float(r["actual_max_c"]-r["temp_c"]) for r in rows]
+        if len(errs)>=20:
+            muerr=sum(errs)/len(errs)
+            var=sum((e-muerr)**2 for e in errs)/(len(errs)-1)
+            sigma=max(0.75,min(3.0,math.sqrt(var))); sigma_source="historical"
+        else:
+            sigma=1.50; sigma_source="fallback"
+        mu=float(forecast["temp_c"])
+        out={"icao":icao,"city":airport["city"],"market_date":market_date,"forecast":{"temp_c":mu,"model":forecast["model"],"valid_time":forecast["valid_time"]},"sigma_c":round(sigma,3),"sigma_source":sigma_source,"market":[],"status":"OK"}
+        for m in markets:
+            mid=_bucket_mid(m["bucket_label"])
+            if mid is None: continue
+            cdf=lambda z: 0.5*(1+math.erf(z/math.sqrt(2)))
+            fair=max(0,min(1,cdf((mid+0.5-mu)/sigma)-cdf((mid-0.5-mu)/sigma)))
+            market=float(m["yes_price_cents"]); edge=fair*100-market
+            out["market"].append({"bucket":m["bucket_label"],"mid_c":mid,"market_prob":round(market/100,4),"fair_prob":round(fair,4),"fair_cents":round(fair*100,1),"edge_cents":round(edge,1),"volume_usd":m["volume_usd"],"fetched_at":m["fetched_at"],"signal":"LONG" if edge>=8 else ("SHORT" if edge<=-8 else "PASS")})
+        return out
+    finally: con.close()
+
+
 def handle(path):
     parsed = urlparse(path)
     parts = parsed.path.strip("/").split("/")
@@ -145,4 +187,7 @@ def handle(path):
             return 400, {"error": "hours must be an integer"}
     if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "sensor-comparison":
         return 200, comparison(parts[2])
+    if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "trading":
+        q = parse_qs(parsed.query)
+        return 200, trading(parts[2], q.get("date", [None])[0])
     return None
