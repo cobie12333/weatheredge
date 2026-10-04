@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Collect live Weather Underground PWS observations when an API key is configured.
 
-Only registry entries with enabled=1 are queried. The provider's documented
+All registry entries with enabled=1 are queried; verified is a research/quality flag, not a data-collection gate. The provider's documented
 documented Weather Company PWS endpoints are used; no undocumented web endpoint is assumed.
 """
 
@@ -12,8 +12,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-from config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
-from db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
+from .config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
+from .db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
 
 logger = setup_logger("pws_multi_collector")
 WU_URL = "https://api.weather.com/v2/pws/observations/current"
@@ -90,7 +90,7 @@ def run():
         stations = con.execute(
             """SELECT station_id, airport_icao, latitude, longitude, distance_km
                FROM pws_station
-               WHERE verified = 1 AND enabled = 1
+               WHERE enabled = 1
                ORDER BY distance_km"""
         ).fetchall()
 
