@@ -17,6 +17,7 @@ import sys
 import urllib.request
 import urllib.error
 from datetime import date, datetime, timezone
+from airports import AIRPORT_BY_ICAO
 
 sys.path.insert(0, ".")
 from db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
@@ -71,13 +72,15 @@ def fetch_price_history(token_id: str, start_ts: int, end_ts: int) -> list:
         return json.loads(resp.read().decode("utf-8")).get("history", [])
 
 
-def backfill_day(target_date: date) -> dict:
+def backfill_day(target_date: date, icao: str = "FACT") -> dict:
     """
     Backfill one market-day: resolve slug -> event -> token ids ->
     price history per bucket, tagged source='backfill_polymarket'.
     """
     con = get_connection()
-    slug = build_slug_for_date(target_date)
+    if icao not in AIRPORT_BY_ICAO:
+        raise ValueError(f"Unknown airport ICAO: {icao}")
+    slug = build_slug_for_date(target_date, icao)
     market_date_str = target_date.isoformat()
 
     try:
@@ -125,13 +128,13 @@ def backfill_day(target_date: date) -> dict:
                 try:
                     cur = con.execute(
                         """
-                        INSERT OR IGNORE INTO market_price
-                        (fetched_at, market_date, bucket_label, yes_price_cents,
-                         no_price_cents, volume_usd, raw_payload, source)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'backfill_polymarket')
+                        INSERT OR IGNORE INTO market_price_multi
+                        (station_id, market_date, fetched_at, bucket_label, yes_price_cents,
+                         no_price_cents, volume_usd, market_slug, raw_payload, source)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'backfill_polymarket')
                         """,
-                        (fetched_at, market_date_str, bucket_label, yes_cents,
-                         100 - yes_cents, None, json.dumps(point)),
+                        (icao, market_date_str, fetched_at, bucket_label, yes_cents,
+                         100 - yes_cents, None, slug, json.dumps(point)),
                     )
                     if cur.rowcount:
                         total_written += 1
@@ -149,22 +152,23 @@ def backfill_day(target_date: date) -> dict:
         con.close()
 
 
-def backfill_range(start: date, end: date) -> dict:
+def backfill_range(start: date, end: date, icao: str = "FACT") -> dict:
     """Backfill each day in [start, end] as a separate market event."""
     results = []
     current = start
     while current <= end:
-        result = backfill_day(current)
+        result = backfill_day(current, icao=icao)
         results.append({"date": current.isoformat(), **result})
         current = date.fromordinal(current.toordinal() + 1)
     return {"status": "ok", "days": results}
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python3 backfill/polymarket_prices.py YYYY-MM-DD YYYY-MM-DD")
+    if len(sys.argv) not in (3, 4):
+        print("Usage: python3 backfill/polymarket_prices.py YYYY-MM-DD YYYY-MM-DD [ICAO]")
         sys.exit(1)
     start = date.fromisoformat(sys.argv[1])
     end = date.fromisoformat(sys.argv[2])
-    result = backfill_range(start, end)
+    icao = sys.argv[3].upper() if len(sys.argv) == 4 else "FACT"
+    result = backfill_range(start, end, icao=icao)
     print(json.dumps(result, indent=2))
