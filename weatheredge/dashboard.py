@@ -9,9 +9,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, ".")
-from airports import AIRPORTS
-from db import get_connection
-import sensor_api
+from .airports import AIRPORTS
+from .db import get_connection
+from . import sensor_api
 
 PORT = 8420
 LIVE_MAX_MINUTES = 30
