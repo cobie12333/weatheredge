@@ -5,7 +5,8 @@ import json
 import sys
 import urllib.error
 import urllib.request
-from datetime import date, datetime, timezone\nfrom zoneinfo import ZoneInfo
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from airports import AIRPORT_BY_ICAO, AIRPORTS
 from config.settings import GAMMA_API_BASE, HTTP_TIMEOUT_SECONDS, TRACKED_BUCKET_COUNT, USER_AGENT
