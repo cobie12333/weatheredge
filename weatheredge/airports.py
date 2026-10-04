@@ -13,7 +13,7 @@ AIRPORTS = [
     {"icao": "KSFO", "city": "San Francisco", "market_city": "san-francisco", "country": "US", "tz": "America/Los_Angeles", "lat": 37.62131, "lon": -122.37896},
     {"icao": "KSEA", "city": "Seattle", "market_city": "seattle", "country": "US", "tz": "America/Los_Angeles", "lat": 47.45025, "lon": -122.30882},
     {"icao": "EGLC", "city": "London", "market_city": "london", "country": "GB", "tz": "Europe/London", "lat": 51.50528, "lon": 0.05528},
-    {"icao": "KBKF", "city": "Buckley", "market_city": "buckley", "country": "US", "tz": "America/Denver", "lat": 39.70167, "lon": -104.75167},
+    {"icao": "KBKF", "city": "Buckley", "market_city": "denver", "country": "US", "tz": "America/Denver", "lat": 39.70167, "lon": -104.75167},
     {"icao": "RJTT", "city": "Tokyo", "market_city": "tokyo", "country": "JP", "tz": "Asia/Tokyo", "lat": 35.54939, "lon": 139.77984},
 ]
 
