@@ -36,7 +36,7 @@ def run():
     try:
         stations = con.execute(
             """SELECT station_id, airport_icao, latitude, longitude, distance_km
-               FROM pws_station WHERE verified=1 AND enabled=1 ORDER BY distance_km"""
+               FROM pws_station WHERE enabled=1 ORDER BY distance_km"""
         ).fetchall()
         if not stations:
             log_collection_attempt(con, "pws_rapid", True, rows_written=0)
