@@ -15,6 +15,7 @@ from db import setup_logger
 import market_collector
 import multi_metar_collector
 import pws_multi_collector
+import pws_discovery
 
 logger = setup_logger("live_runner")
 
@@ -30,6 +31,7 @@ def run_forever():
     last_metar = 0.0
     last_market = {a["icao"]: 0.0 for a in AIRPORTS}
     last_pws = 0.0
+    last_pws_discovery = 0.0
 
     while True:
         now = time.monotonic()
@@ -46,6 +48,11 @@ def run_forever():
                 logger.info("polling market %s", icao)
                 market_collector.run(icao=icao)
                 last_market[icao] = now
+
+        if now - last_pws_discovery >= 6 * 60 * 60:
+            logger.info("discovering nearby PWS")
+            pws_discovery.run()
+            last_pws_discovery = now
 
         if now - last_pws >= 5 * 60:
             logger.info("polling live PWS")
