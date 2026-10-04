@@ -21,3 +21,19 @@ PWS_STATIONS = [
 PWS_BY_AIRPORT = {}
 for station in PWS_STATIONS:
     PWS_BY_AIRPORT.setdefault(station["airport_icao"], []).append(station)
+
+
+# Explicit status for airports where the current Weather Underground airport
+# page reported no nearby PWS. This is a research status, not proof that no
+# station exists anywhere in the surrounding metro area.
+PWS_SEARCH_STATUS = {
+    "FACT": "verified_candidates",
+    "SAEZ": "verified_candidates",
+    "LEMD": "verified_candidates",
+    "KATL": "no_nearby_pws_verified",
+    "KSFO": "no_nearby_pws_verified",
+    "KSEA": "verified_candidates",
+    "EGLC": "verified_candidates",
+    "KBKF": "verified_candidates",
+    "RJTT": "no_nearby_pws_verified",
+}
