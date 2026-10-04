@@ -119,10 +119,10 @@ button.active{{border-color:#4aa3ff;color:#4aa3ff}} main{{padding:18px;max-width
 <script>
 const airports={payload};
 let mode='all';
-function apply(){const q=document.getElementById('q').value.toLowerCase();let live=0;
+function apply(){{const q=document.getElementById('q').value.toLowerCase();let live=0;
 document.querySelectorAll('.card').forEach((c,i)=>{const a=airports[i];const okq=!q||(a.icao+' '+a.city).toLowerCase().includes(q);
 const okm=mode==='all'||(mode==='live'&&a.obs_time)||(mode==='us'&&a.country==='US')||(mode==='intl'&&a.country!=='US');
-if(a.obs_time)live++;c.style.display=okq&&okm?'block':'none'});document.getElementById('liveCount').textContent=live}
+if(a.obs_time)live++;c.style.display=okq&&okm?'block':'none'});document.getElementById('liveCount').textContent=live}}
 function filterCards(m,b){{mode=m;document.querySelectorAll('button').forEach(x=>x.classList.remove('active'));b.classList.add('active');apply()}}
 function searchCards(){{apply()}}
 setTimeout(()=>location.reload(),60000);apply();
