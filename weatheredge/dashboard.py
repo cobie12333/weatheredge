@@ -71,8 +71,8 @@ def get_airport_rows():
                        WHERE x.station_id = s.station_id
                        ORDER BY x.obs_time DESC LIMIT 1
                    )
-                   WHERE airport_icao = ? AND verified = 1
-                   ORDER BY distance_km ASC""",
+                   WHERE s.airport_icao = ? AND s.verified = 1
+                   ORDER BY s.distance_km ASC""",
                 (station,),
             ).fetchall()
 
