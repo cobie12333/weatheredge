@@ -183,7 +183,7 @@ main{{padding:18px;max-width:1500px;margin:auto}}
 .muted{{color:#596574}}
 .summary{{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:15px;color:#8b949e;font-size:12px}}
 .summary b{{color:#d7dee7}} .search{{margin-left:auto;background:#0d141d;border:1px solid #293442;color:#d7dee7;padding:7px;border-radius:6px}}
-</style></head>
+.detail{margin-bottom:18px;background:#0d141d;border:1px solid #293442;border-radius:8px;padding:15px}.detailhead{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.detailhead h2{margin:0;color:#fff;font-size:16px}.select{background:#111923;color:#d7dee7;border:1px solid #293442;border-radius:6px;padding:7px}.chartwrap{margin-top:12px;border:1px solid #202b36;border-radius:6px;background:#080d13;overflow:hidden}#chart{display:block;width:100%;height:340px}.axis{fill:#596574;font-size:10px}.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;font-size:11px}.legend span{color:#c9d1d9}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#58a6ff;margin-right:5px}.metardot{background:#fff}.compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-top:12px}.stat{background:#080d13;border:1px solid #202b36;border-radius:6px;padding:10px}.stat .k{font-size:9px;color:#596574}.stat .v{font-size:16px;color:#d7dee7;margin-top:5px}</style></head>
 <body>
 <header><h1>WEATHEREDGE // AIRPORT MISSION CONTROL</h1>
 <div class="sub">Canonical multi-airport observation layer · generated {now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")}</div>
@@ -196,7 +196,7 @@ main{{padding:18px;max-width:1500px;margin:auto}}
 <main><div class="summary"><span>Airports: <b>{len(rows)}</b></span>
 <span>Live: <b id="liveCount">{live_count}</b></span><span>Stale: <b>{stale_count}</b></span>
 <span>Refresh: <b id="refresh">{now_utc.strftime("%H:%M:%S UTC")}</b></span></div>
-<section class="grid" id="grid">{''.join(cards)}</section></main>
+<section class="detail"><div class="detailhead"><h2>SENSOR LAB // 24H TEMPERATURE</h2><select class="select" id="airportSelect" onchange="loadSensorLab()"></select><button onclick="loadSensorLab()">REFRESH</button><span class="muted" id="labStatus">—</span></div><div class="chartwrap"><svg id="chart" viewBox="0 0 1000 340" preserveAspectRatio="none"></svg></div><div class="legend" id="legend"></div><div class="compare" id="compare"></div></section><section class="grid" id="grid">{''.join(cards)}</section></main>
 <script>
 const airports={payload};
 let mode='all';
@@ -206,7 +206,16 @@ const okq=!q||(a.icao+' '+a.city).toLowerCase().includes(q);
 const okm=mode==='all'||(mode==='live'&&a.status==='LIVE')||(mode==='stale'&&a.status==='STALE')||(mode==='us'&&a.country==='US')||(mode==='intl'&&a.country!=='US');
 if(a.status==='LIVE')live++;c.style.display=okq&&okm?'block':'none'}});document.getElementById('liveCount').textContent=live}}
 function filterCards(m,b){{mode=m;document.querySelectorAll('button').forEach(x=>x.classList.remove('active'));b.classList.add('active');apply()}}
-function searchCards(){{apply()}}
+
+const labAirports={payload};
+function fillAirportSelect(){const s=document.getElementById('airportSelect');if(s.options.length)return;labAirports.forEach(a=>{const o=document.createElement('option');o.value=a.icao;o.textContent=a.icao+' — '+a.city;s.appendChild(o)})}
+function fmt(v,s=''){return v==null?'—':Number(v).toFixed(1)+s}
+function calcTrend(rows){const v=rows.filter(x=>x.temp_c!=null);if(v.length<2)return null;const a=new Date(v[0].obs_time),b=new Date(v[v.length-1].obs_time),h=(b-a)/3600000;return h>0?(v[v.length-1].temp_c-v[0].temp_c)/h:null}
+async function loadSensorLab(){fillAirportSelect();const icao=document.getElementById('airportSelect').value;document.getElementById('labStatus').textContent='loading '+icao+'…';try{const [ts,cmp]=await Promise.all([fetch('/api/airport/'+icao+'/timeseries?hours=24',{cache:'no-store'}).then(r=>r.json()),fetch('/api/airport/'+icao+'/sensor-comparison',{cache:'no-store'}).then(r=>r.json())]);drawChart(ts);drawCompare(ts,cmp);document.getElementById('labStatus').textContent=new Date().toISOString().slice(11,19)+' UTC'}catch(e){document.getElementById('labStatus').textContent='ERROR: '+e.message}}
+function drawChart(d){const svg=document.getElementById('chart'),W=1000,H=340,L=48,R=15,T=18,B=30,points=[];d.series.forEach(x=>points.push(x.temp_c));d.metar.forEach(x=>points.push(x.temp_c));if(!points.length){svg.innerHTML='<text x="50" y="80" class="axis">NO SENSOR DATA</text>';return}const min=Math.floor(Math.min(...points)-1),max=Math.ceil(Math.max(...points)+1),range=Math.max(1,max-min),all=[...d.series,...d.metar].sort((a,b)=>new Date(a.obs_time)-new Date(b.obs_time)),t0=new Date(all[0].obs_time).getTime(),t1=new Date(all[all.length-1].obs_time).getTime(),span=Math.max(1,t1-t0),x=t=>L+(new Date(t).getTime()-t0)/span*(W-L-R),y=v=>T+(max-v)/range*(H-T-B);let out='';for(let v=min;v<=max;v++){const yy=y(v);out+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+yy+'" y2="'+yy+'" stroke="#202b36"/><text x="5" y="'+(yy+4)+'" class="axis">'+v+'°C</text>'}const by={};d.series.forEach(p=>(by[p.station_id]??=[]).push(p));const ids=Object.keys(by);ids.forEach((id,i)=>{const pts=by[id].map(p=>x(p.obs_time)+','+y(p.temp_c)).join(' ');out+='<polyline fill="none" stroke="hsl('+(190+i*55)+',80%,60%)" stroke-width="2" points="'+pts+'"/>'});const mp=d.metar.map(p=>x(p.obs_time)+','+y(p.temp_c)).join(' ');if(mp)out+='<polyline fill="none" stroke="#fff" stroke-width="2.5" points="'+mp+'"/>';svg.innerHTML=out;document.getElementById('legend').innerHTML='<span><i class="dot metardot"></i>METAR / settlement proxy</span>'+ids.map((id,i)=>'<span><i class="dot" style="background:hsl('+(190+i*55)+',80%,60%)"></i>'+id+'</span>').join('')}
+function drawCompare(ts,cmp){const s=cmp.settlement_sensor||{},p=(cmp.pws||[]).filter(x=>x.temp_c!=null).sort((a,b)=>(a.distance_km??999)-(b.distance_km??999)),near=p[0],trendM=calcTrend(ts.metar),trendP=near?calcTrend(ts.series.filter(x=>x.station_id===near.station_id)):null,vals=[['SETTLEMENT / METAR',fmt(s.temp_c,'°C')],['NEAREST PWS',near?fmt(near.temp_c,'°C'):'—'],['PWS SPREAD',near&&s.temp_c!=null?fmt(near.temp_c-s.temp_c,'°C'):'—'],['PWS TREND',trendP==null?'—':(trendP>=0?'+':'')+trendP.toFixed(2)+'°C/h'],['METAR TREND',trendM==null?'—':(trendM>=0?'+':'')+trendM.toFixed(2)+'°C/h'],['PWS FRESHNESS',near&&near.age_min!=null?near.age_min.toFixed(0)+'m':'—'],['PWS DISTANCE',near&&near.distance_km!=null?near.distance_km.toFixed(2)+'km':'—'],['QC',near&&near.is_valid!=null?(near.is_valid?'PASS':'FAIL'):'—']];document.getElementById('compare').innerHTML=vals.map(v=>'<div class="stat"><div class="k">'+v[0]+'</div><div class="v">'+v[1]+'</div></div>').join('')}
+fillAirportSelect();loadSensorLab();
+\nfunction searchCards(){{apply()}}
 setTimeout(()=>location.reload(),60000);apply();
 </script></body></html>"""
 
