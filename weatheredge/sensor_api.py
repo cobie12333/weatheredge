@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
-from db import get_connection
-from airports import AIRPORTS
+from .db import get_connection
+from .airports import AIRPORTS
 
 
 def _age_minutes(value):
