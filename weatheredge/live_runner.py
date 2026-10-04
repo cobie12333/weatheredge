@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""Run the WeatherEdge live collection loop.
-
-This is deliberately a small dependency-free scheduler. It never claims an
-observation is live unless it was actually written to the database.
-"""
+"""Run the WeatherEdge live collection loop."""
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from airports import AIRPORTS
@@ -14,23 +10,23 @@ from config.settings import MARKET_POLL_MINUTES_DAYTIME, MARKET_POLL_MINUTES_NIG
 from db import setup_logger
 import market_collector
 import multi_metar_collector
-import pws_multi_collector
 import pws_discovery
+import pws_multi_collector
+import pws_rapid_collector
 
 logger = setup_logger("live_runner")
 
 
 def _minutes_for_market(airport):
     hour = datetime.now(ZoneInfo(airport["tz"])).hour
-    if 6 <= hour < 20:
-        return MARKET_POLL_MINUTES_DAYTIME
-    return MARKET_POLL_MINUTES_NIGHT
+    return MARKET_POLL_MINUTES_DAYTIME if 6 <= hour < 20 else MARKET_POLL_MINUTES_NIGHT
 
 
 def run_forever():
     last_metar = 0.0
     last_market = {a["icao"]: 0.0 for a in AIRPORTS}
     last_pws = 0.0
+    last_pws_rapid = 0.0
     last_pws_discovery = 0.0
 
     while True:
@@ -58,6 +54,13 @@ def run_forever():
             logger.info("polling live PWS")
             pws_multi_collector.run()
             last_pws = now
+
+        # Rapid history is a 24-hour snapshot, so refresh it less often than
+        # current observations to avoid needless API calls.
+        if now - last_pws_rapid >= 15 * 60:
+            logger.info("polling PWS rapid 24h history")
+            pws_rapid_collector.run()
+            last_pws_rapid = now
 
         time.sleep(10)
 
