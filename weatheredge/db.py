@@ -10,7 +10,10 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-_SCHEMA_READY = False\n\n\ndef init_schema() -> None:
+_SCHEMA_READY = False
+
+
+def init_schema() -> None:
     global _SCHEMA_READY
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=30)
@@ -24,6 +27,9 @@ _SCHEMA_READY = False\n\n\ndef init_schema() -> None:
 
 
 def get_connection(readonly: bool = False) -> sqlite3.Connection:
+    global _SCHEMA_READY
+    if not readonly and not _SCHEMA_READY:
+        init_schema()
     if readonly:
         if not os.path.exists(DB_PATH):
             raise FileNotFoundError(DB_PATH)
