@@ -11,12 +11,14 @@ def utc_now_iso() -> str:
 
 
 _SCHEMA_READY = False\n\n\ndef init_schema() -> None:
+    global _SCHEMA_READY
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=30)
     try:
         with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
             con.executescript(f.read())
         con.commit()
+        _SCHEMA_READY = True
     finally:
         con.close()
 
