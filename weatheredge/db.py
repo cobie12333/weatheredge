@@ -1,20 +1,38 @@
-import sqlite3
 import logging
 import os
-import urllib.request
-from datetime import datetime, timezone, timedelta
+import sqlite3
+from datetime import datetime, timezone
 
 from config.settings import DB_PATH, SCHEMA_PATH, LOG_DIR
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def get_connection() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+def init_schema() -> None:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        with open(SCHEMA_PATH, "r", encoding="utf-8") as f:
+            con.executescript(f.read())
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_connection(readonly: bool = False) -> sqlite3.Connection:
+    if readonly:
+        if not os.path.exists(DB_PATH):
+            raise FileNotFoundError(DB_PATH)
+        con = sqlite3.connect(
+            f"file:{DB_PATH}?mode=ro",
+            uri=True,
+            timeout=30,
+        )
+    else:
+        con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
-    with open(SCHEMA_PATH, "r") as f:
-        con.executescript(f.read())
     return con
 
 
