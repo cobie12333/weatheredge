@@ -2,7 +2,7 @@
 """Collect live Weather Underground PWS observations when an API key is configured.
 
 Only registry entries with enabled=1 are queried. The provider's documented
-hourly PWS endpoint is used; no undocumented WU web endpoint is assumed.
+documented Weather Company PWS endpoints are used; no undocumented web endpoint is assumed.
 """
 
 import json
