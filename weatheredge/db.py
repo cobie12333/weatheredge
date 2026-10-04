@@ -10,7 +10,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def init_schema() -> None:
+_SCHEMA_READY = False\n\n\ndef init_schema() -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=30)
     try:
