@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, ".")
 from airports import AIRPORTS
 from db import get_connection
+import sensor_api
 
 PORT = 8420
 LIVE_MAX_MINUTES = 30
@@ -212,6 +213,16 @@ setTimeout(()=>location.reload(),60000);apply();
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        api = sensor_api.handle(self.path)
+        if api:
+            status, payload = api
+            body = json.dumps(payload, separators=(",", ":")).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path != "/":
             self.send_response(404)
             self.end_headers()
