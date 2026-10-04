@@ -44,6 +44,28 @@ jobs:
               assert not missing, missing
               con.close()
           PY
+      - name: PWS collector parser smoke test
+        run: |
+          cd weatheredge
+          python - <<'PY'
+          import pws_multi_collector
+          row = pws_multi_collector._observation_to_row(
+              {"epoch": 1770000000, "humidity": 55, "winddir": 180,
+               "metric": {"temp": 24.5, "dewpt": 14.0, "windspeed": 5.0, "pressure": 1012.3}},
+              {"station_id":"TEST1","airport_icao":"FACT","latitude":-33.97,
+               "longitude":18.60,"distance_km":1.0})
+          assert row["temp_c"] == 24.5
+          assert row["dewpoint_c"] == 14.0
+          assert row["wind_speed_kt"] == 5.0
+          assert row["obs_time"].endswith("Z")
+          PY
+      - name: Live runner import smoke test
+        run: |
+          cd weatheredge
+          python - <<'PY'
+          import live_runner
+          assert live_runner._minutes_for_market({"tz":"Africa/Johannesburg"}) in (15, 60)
+          PY
       - name: Dashboard render smoke test
         run: |
           cd weatheredge
