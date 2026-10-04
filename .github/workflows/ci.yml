@@ -1,0 +1,65 @@
+name: WeatherEdge CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Python
+        run: python -m compileall -q weatheredge
+      - name: Fresh database smoke test
+        run: |
+          cd weatheredge
+          python - <<'PY'
+          import os
+          import tempfile
+          import db
+
+          with tempfile.TemporaryDirectory() as d:
+              db.DB_PATH = os.path.join(d, "weatheredge.db")
+              db.SCHEMA_PATH = os.path.abspath("schema.sql")
+              db._SCHEMA_READY = False
+              db.init_schema()
+              con = db.get_connection(readonly=True)
+              tables = {r["name"] for r in con.execute(
+                  "select name from sqlite_master where type='table'"
+              )}
+              required = {
+                  "metar_obs", "metar_parsed", "pws_obs", "saws_obs",
+                  "saws_forecast", "metar_multi", "pws_station",
+                  "pws_obs_multi", "market_price_multi",
+                  "outcome_multi", "forecast_history_multi",
+                  "market_price", "outcome", "collection_log",
+                  "forecast_history",
+              }
+              missing = required - tables
+              assert not missing, missing
+              con.close()
+          PY
+      - name: Dashboard render smoke test
+        run: |
+          cd weatheredge
+          python - <<'PY'
+          import dashboard
+          html = dashboard.render([
+              {
+                  "icao":"FACT","city":"Cape Town","country":"ZA",
+                  "tz":"Africa/Johannesburg","temp_c":25.0,
+                  "dewpoint_c":12.0,"wind_dir_deg":180.0,
+                  "wind_speed_kt":5.0,"obs_time":None,
+                  "report_type":"METAR","raw_metar":None,
+                  "temp_change":None,"age_min":None,
+                  "status":"NO DATA","pws":[]
+              }
+          ])
+          assert "<!doctype html>" in html
+          assert "function apply()" in html
+          PY
