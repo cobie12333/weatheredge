@@ -16,7 +16,7 @@ from config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
 from db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
 
 logger = setup_logger("pws_multi_collector")
-WU_URL = "https://api.weather.com/v2/pws/observations/hourly/7day"
+WU_URL = "https://api.weather.com/v2/pws/observations/current"
 
 
 def _num(value):
@@ -72,6 +72,7 @@ def fetch_station(station_id, api_key):
         "stationId": station_id,
         "format": "json",
         "units": "m",
+        "numericPrecision": "decimal",
         "apiKey": api_key,
     })
     req = urllib.request.Request(
