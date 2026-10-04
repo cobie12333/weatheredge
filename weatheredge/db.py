@@ -3,7 +3,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from config.settings import DB_PATH, SCHEMA_PATH, LOG_DIR
+from .config.settings import DB_PATH, SCHEMA_PATH, LOG_DIR
 
 
 def utc_now_iso() -> str:
