@@ -8,11 +8,9 @@ from zoneinfo import ZoneInfo
 from .airports import AIRPORTS
 from .config.settings import MARKET_POLL_MINUTES_DAYTIME, MARKET_POLL_MINUTES_NIGHT, METAR_POLL_MINUTES
 from .db import setup_logger
-from . import market_collector
-from . import multi_metar_collector
-from . import pws_discovery
-from . import pws_multi_collector
-from . import pws_rapid_collector
+from . import market_collector, multi_metar_collector, pws_discovery
+from . import pws_multi_collector, pws_rapid_collector
+import jev_runner
 
 logger = setup_logger("live_runner")
 
@@ -28,6 +26,7 @@ def run_forever():
     last_pws = 0.0
     last_pws_rapid = 0.0
     last_pws_discovery = 0.0
+    last_jev = 0.0
 
     while True:
         now = time.monotonic()
@@ -55,12 +54,19 @@ def run_forever():
             pws_multi_collector.run()
             last_pws = now
 
-        # Rapid history is a 24-hour snapshot, so refresh it less often than
-        # current observations to avoid needless API calls.
         if now - last_pws_rapid >= 15 * 60:
             logger.info("polling PWS rapid 24h history")
             pws_rapid_collector.run()
             last_pws_rapid = now
+
+        # Jev is optional; without TYPESAFE_API_KEY this is a no-op/error log.
+        if now - last_jev >= 5 * 60:
+            for airport in AIRPORTS:
+                try:
+                    jev_runner.run(airport=airport["icao"])
+                except Exception as exc:
+                    logger.warning("Jev scoring skipped for %s: %s", airport["icao"], exc)
+            last_jev = now
 
         time.sleep(10)
 
