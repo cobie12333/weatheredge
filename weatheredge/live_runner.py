@@ -10,7 +10,7 @@ from .config.settings import MARKET_POLL_MINUTES_DAYTIME, MARKET_POLL_MINUTES_NI
 from .db import setup_logger
 from . import market_collector, multi_metar_collector, pws_discovery
 from . import pws_multi_collector, pws_rapid_collector
-from . import jev_runner
+import jev_runner
 
 logger = setup_logger("live_runner")
 
