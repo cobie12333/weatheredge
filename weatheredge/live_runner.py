@@ -13,6 +13,7 @@ from . import multi_metar_collector
 from . import pws_discovery
 from . import pws_multi_collector
 from . import pws_rapid_collector
+from . import reservoir_tmax
 
 logger = setup_logger("live_runner")
 
@@ -28,6 +29,7 @@ def run_forever():
     last_pws = 0.0
     last_pws_rapid = 0.0
     last_pws_discovery = 0.0
+    last_reservoir = 0.0
 
     while True:
         now = time.monotonic()
@@ -55,12 +57,29 @@ def run_forever():
             pws_multi_collector.run()
             last_pws = now
 
-        # Rapid history is a 24-hour snapshot, so refresh it less often than
-        # current observations to avoid needless API calls.
         if now - last_pws_rapid >= 15 * 60:
             logger.info("polling PWS rapid 24h history")
             pws_rapid_collector.run()
             last_pws_rapid = now
+
+        # ESN Tmax layer: retrain/score every 15 minutes after the local
+        # morning sequence has accumulated. It is experimental and isolated
+        # from trading execution.
+        if now - last_reservoir >= 15 * 60:
+            for airport in AIRPORTS:
+                try:
+                    result = reservoir_tmax.train_and_score(airport["icao"])
+                    reservoir_tmax.persist(result)
+                    logger.info(
+                        "reservoir %s: status=%s top=%s training_days=%s",
+                        airport["icao"],
+                        result.get("status"),
+                        result.get("top_bucket"),
+                        result.get("training_days"),
+                    )
+                except Exception:
+                    logger.exception("reservoir scoring failed for %s", airport["icao"])
+            last_reservoir = now
 
         time.sleep(10)
 
