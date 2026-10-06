@@ -102,6 +102,81 @@ def _load_days(con, icao, cutoff_hour=12):
     return sequences, targets, dates
 
 
+def walk_forward_evaluate(sequences, targets, dates=None, min_train_days=20, max_test_days=None):
+    """Chronologically evaluate the ESN without using future outcomes.
+
+    Each test day gets a freshly initialized reservoir and a readout trained
+    only on outcomes strictly before that day. Returns aggregate metrics plus
+    per-day predictions. This is research-only and does not persist forecasts.
+    """
+    if len(sequences) != len(targets):
+        raise ValueError("sequences and targets must have equal length")
+    if dates is not None and len(dates) != len(targets):
+        raise ValueError("dates and targets must have equal length")
+    if len(targets) <= min_train_days:
+        return {"status": "INSUFFICIENT_HISTORY", "test_days": 0,
+                "min_train_days": min_train_days, "predictions": []}
+
+    stop = len(targets)
+    if max_test_days is not None:
+        stop = min(stop, min_train_days + max_test_days)
+
+    predictions = []
+    for i in range(min_train_days, stop):
+        model = EchoStateTmax(INPUT_SIZE, BUCKETS, ReservoirConfig())
+        model.fit(sequences[:i], targets[:i])
+        probs = model.predict_proba(sequences[i])
+        actual = float(targets[i])
+        top_bucket = int(max(probs, key=probs.get))
+        expected = sum(int(bucket) * float(prob) for bucket, prob in probs.items())
+        actual_bucket = min(BUCKETS, key=lambda bucket: abs(bucket - actual))
+        brier = sum(
+            (float(probs[str(bucket)]) - (1.0 if bucket == actual_bucket else 0.0)) ** 2
+            for bucket in BUCKETS
+        )
+        p = max(1e-12, min(1.0, float(probs[str(actual_bucket)])))
+        predictions.append({
+            "date": dates[i] if dates else i,
+            "actual_c": actual,
+            "actual_bucket": actual_bucket,
+            "top_bucket": top_bucket,
+            "expected_c": expected,
+            "mae": abs(expected - actual),
+            "brier": brier,
+            "log_loss": -math.log(p),
+            "probabilities": probs,
+        })
+
+    if not predictions:
+        return {"status": "INSUFFICIENT_HISTORY", "test_days": 0,
+                "min_train_days": min_train_days, "predictions": []}
+
+    mae = sum(p["mae"] for p in predictions) / len(predictions)
+    brier = sum(p["brier"] for p in predictions) / len(predictions)
+    log_loss = sum(p["log_loss"] for p in predictions) / len(predictions)
+    top1 = sum(p["top_bucket"] == p["actual_bucket"] for p in predictions) / len(predictions)
+
+    persistence_errors = []
+    persistence_hits = 0
+    for p, i in zip(predictions, range(min_train_days, stop)):
+        prev_bucket = min(BUCKETS, key=lambda bucket: abs(bucket - float(targets[i - 1])))
+        persistence_errors.append(abs(prev_bucket - float(targets[i])))
+        persistence_hits += prev_bucket == p["actual_bucket"]
+
+    return {
+        "status": "OK",
+        "test_days": len(predictions),
+        "min_train_days": min_train_days,
+        "mae_c": round(mae, 4),
+        "brier": round(brier, 6),
+        "log_loss": round(log_loss, 6),
+        "top_bucket_accuracy": round(top1, 4),
+        "persistence_mae_c": round(sum(persistence_errors) / len(persistence_errors), 4),
+        "persistence_top_bucket_accuracy": round(persistence_hits / len(predictions), 4),
+        "predictions": predictions,
+    }
+
+
 def train_and_score(icao="FACT", market_date=None, cutoff_hour=12):
     tz = ZoneInfo(AIRPORT_BY_ICAO[icao]["tz"])
     if market_date is None:
