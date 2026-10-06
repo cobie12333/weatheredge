@@ -139,7 +139,11 @@ class EchoStateTmax:
         self.reset()
         for row in sequence:
             self.step(row)
-        logits = _mat_vec(self.readout, self._features(self.state))
+        features = self._features(self.state)
+        logits = [
+            sum(features[i] * self.readout[i][j] for i in range(len(features)))
+            for j in range(len(self.buckets))
+        ]
         probs = _softmax(logits)
         return {str(b): round(p, 6) for b, p in zip(self.buckets, probs)}
 
