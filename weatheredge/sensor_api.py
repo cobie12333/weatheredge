@@ -217,9 +217,89 @@ def trading(icao, market_date=None):
     finally: con.close()
 
 
+def live(icao):
+    """Return the current cockpit snapshot for one airport."""
+    airport = _airport(icao)
+    if not airport:
+        return {"error": "unknown airport"}
+
+    con = get_connection(readonly=True)
+    try:
+        metar = con.execute(
+            """SELECT obs_time,temp_c,dewpoint_c,wind_dir_deg,wind_speed_kt,
+                      visibility_sm,report_type,source,raw_metar
+               FROM metar_multi
+               WHERE station_id=? ORDER BY obs_time DESC LIMIT 1""", (icao,)
+        ).fetchone()
+
+        pws_rows = con.execute(
+            """SELECT s.station_id,s.name,s.latitude,s.longitude,s.distance_km,
+                      s.status,s.verified,s.enabled,
+                      o.temp_c,o.humidity,o.dewpoint_c,o.wind_dir_deg,o.wind_speed_kt,
+                      o.pressure_hpa,o.obs_time,o.fetched_at,o.source,o.is_valid
+               FROM pws_station s
+               LEFT JOIN pws_obs_multi o ON o.id=(
+                 SELECT x.id FROM pws_obs_multi x
+                 WHERE x.station_id=s.station_id
+                 ORDER BY x.obs_time DESC LIMIT 1)
+               WHERE s.airport_icao=? AND s.enabled=1
+               ORDER BY s.distance_km""", (icao,)
+        ).fetchall()
+
+        forecast = con.execute(
+            """SELECT model,temp_c,valid_time,fetched_at,lead_hours,source
+               FROM forecast_history_multi
+               WHERE station_id=? AND temp_c IS NOT NULL
+               ORDER BY fetched_at DESC LIMIT 1""", (icao,)
+        ).fetchone()
+
+        markets = con.execute(
+            """SELECT bucket_label,yes_price_cents,no_price_cents,volume_usd,fetched_at
+               FROM market_price_multi
+               WHERE station_id=? AND market_date=?
+               AND yes_price_cents IS NOT NULL
+               ORDER BY fetched_at DESC LIMIT 11""",
+            (icao, datetime.now(timezone.utc).astimezone(ZoneInfo(airport["tz"])).date().isoformat()),
+        ).fetchall()
+
+        def age(row_time):
+            return _age_minutes(row_time) if row_time else None
+
+        pws = []
+        for row in pws_rows:
+            d = dict(row)
+            d["age_min"] = age(d.get("obs_time"))
+            pws.append(d)
+
+        return {
+            "icao": icao,
+            "city": airport["city"],
+            "country": airport["country"],
+            "timezone": airport["tz"],
+            "lat": airport["lat"],
+            "lon": airport["lon"],
+            "server_time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "metar": {
+                **(dict(metar) if metar else {}),
+                "age_min": age(metar["obs_time"]) if metar else None,
+            },
+            "pws": pws,
+            "forecast": dict(forecast) if forecast else None,
+            "markets": [dict(m) for m in markets],
+            "sources": {
+                "metar_age_min": age(metar["obs_time"]) if metar else None,
+                "pws_age_min": min((p["age_min"] for p in pws if p["age_min"] is not None), default=None),
+                "forecast_age_min": age(forecast["fetched_at"]) if forecast else None,
+                "market_age_min": min((age(m["fetched_at"]) for m in markets), default=None),
+            },
+        }
+
+
 def handle(path):
     parsed = urlparse(path)
     parts = parsed.path.strip("/").split("/")
+    if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "live":
+        return 200, live(parts[2])
     if len(parts) == 4 and parts[:3] == ["api", "airport", parts[2]] and parts[3] == "timeseries":
         q = parse_qs(parsed.query)
         hours = q.get("hours", ["24"])[0]
