@@ -217,7 +217,7 @@ function filterCards(m,b){{mode=m;document.querySelectorAll('button').forEach(x=
 
 const labAirports={payload};
 let replayData=null,replayTimer=null,replayMinutes=0,replaySpeed=20;
-function fillAirportSelect(){const s=document.getElementById('airportSelect');if(s.options.length)return;labAirports.forEach(a=>{const o=document.createElement('option');o.value=a.icao;o.textContent=a.icao+' — '+a.city;s.appendChild(o)})}
+function fillAirportSelect(){{const s=document.getElementById('airportSelect');if(s.options.length)return;labAirports.forEach(a=>{{const o=document.createElement('option');o.value=a.icao;o.textContent=a.icao+' — '+a.city;s.appendChild(o)}})}}
 function fmt(v,s=''){return v==null?'—':Number(v).toFixed(1)+s}
 function isoAtMinute(min){return new Date(replayData.replay_start_utc).getTime()+Number(min)*60000}
 function latestAt(rows,t,key='obs_time'){let best=null;for(const r of rows||[]){const d=new Date(r[key]);if(!isNaN(d)&&d.getTime()<=t&&(!best||d.getTime()>new Date(best[key]).getTime()))best=r}return best}
