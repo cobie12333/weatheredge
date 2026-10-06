@@ -17,15 +17,14 @@ jobs:
         run: python -m compileall -q weatheredge
       - name: Fresh database smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
           import os
           import tempfile
-          import db
+          from weatheredge import db
 
           with tempfile.TemporaryDirectory() as d:
               db.DB_PATH = os.path.join(d, "weatheredge.db")
-              db.SCHEMA_PATH = os.path.abspath("schema.sql")
+              db.SCHEMA_PATH = os.path.abspath("weatheredge/schema.sql")
               db._SCHEMA_READY = False
               db.init_schema()
               con = db.get_connection(readonly=True)
@@ -46,9 +45,8 @@ jobs:
           PY
       - name: PWS collector parser smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
-          import pws_multi_collector
+          from weatheredge import pws_multi_collector
           row = pws_multi_collector._observation_to_row(
               {"epoch": 1770000000, "humidity": 55, "winddir": 180,
                "metric": {"temp": 24.5, "dewpt": 14.0, "windspeed": 5.0, "pressure": 1012.3}},
@@ -61,16 +59,14 @@ jobs:
           PY
       - name: Live runner import smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
-          import live_runner
+          from weatheredge import live_runner
           assert live_runner._minutes_for_market({"tz":"Africa/Johannesburg"}) in (15, 60)
           PY
       - name: Dashboard render smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
-          import dashboard
+          from weatheredge import dashboard
           html = dashboard.render([
               {
                   "icao":"FACT","city":"Cape Town","country":"ZA",
