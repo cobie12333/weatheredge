@@ -1,275 +1,111 @@
 #!/usr/bin/env python3
-"""WeatherEdge multi-airport Mission Control."""
-
-import html
-import json
-import sys
-from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from zoneinfo import ZoneInfo
-
-sys.path.insert(0, ".")
-from .airports import AIRPORTS
-from .db import get_connection
-from . import sensor_api
-
-PORT = 8420
-LIVE_MAX_MINUTES = 30
-STALE_MAX_MINUTES = 90
-
-
-def _fmt(v, suffix=""):
-    return "—" if v is None else f"{v:g}{suffix}" if isinstance(v, (int, float)) else f"{v}{suffix}"
-
-
-def _age_minutes(obs_time):
-    if not obs_time:
-        return None
-    try:
-        dt = datetime.fromisoformat(obs_time.replace("Z", "+00:00"))
-        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 60)
-    except ValueError:
-        return None
-
-
-def _status(age):
-    if age is None:
-        return "NO DATA", "dead"
-    if age <= LIVE_MAX_MINUTES:
-        return "LIVE", "live"
-    if age <= STALE_MAX_MINUTES:
-        return "STALE", "stale"
-    return "OFFLINE", "dead"
-
-
-def get_airport_rows():
-    con = get_connection(readonly=True)
-    try:
-        rows = []
-        for airport in AIRPORTS:
-            station = airport["icao"]
-            latest = con.execute(
-                """SELECT * FROM metar_multi
-                   WHERE station_id = ?
-                   ORDER BY obs_time DESC LIMIT 1""",
-                (station,),
-            ).fetchone()
-
-            prev = con.execute(
-                """SELECT temp_c, obs_time FROM metar_multi
-                   WHERE station_id = ? AND temp_c IS NOT NULL
-                   ORDER BY obs_time DESC LIMIT 2""",
-                (station,),
-            ).fetchall()
-
-            pws = con.execute(
-                """SELECT s.station_id, s.name, s.distance_km, s.status, s.enabled, s.source_url,
-                          o.temp_c, o.obs_time
-                   FROM pws_station s
-                   LEFT JOIN pws_obs_multi o ON o.id = (
-                       SELECT x.id FROM pws_obs_multi x
-                       WHERE x.station_id = s.station_id
-                       ORDER BY x.obs_time DESC LIMIT 1
-                   )
-                   WHERE s.airport_icao = ? AND s.enabled = 1
-                   ORDER BY s.distance_km ASC""",
-                (station,),
-            ).fetchall()
-
-            temp_change = None
-            if len(prev) == 2:
-                temp_change = round(prev[0]["temp_c"] - prev[1]["temp_c"], 1)
-
-            age = _age_minutes(latest["obs_time"]) if latest else None
-            status, cls = _status(age)
-
-            rows.append({
-                **airport,
-                "temp_c": latest["temp_c"] if latest else None,
-                "dewpoint_c": latest["dewpoint_c"] if latest else None,
-                "wind_dir_deg": latest["wind_dir_deg"] if latest else None,
-                "wind_speed_kt": latest["wind_speed_kt"] if latest else None,
-                "obs_time": latest["obs_time"] if latest else None,
-                "report_type": latest["report_type"] if latest else None,
-                "raw_metar": latest["raw_metar"] if latest else None,
-                "temp_change": temp_change,
-                "age_min": round(age, 1) if age is not None else None,
-                "status": status,
-                "pws": [dict(x) for x in pws],
-            })
-        return rows
-    finally:
-        con.close()
-
-
-def render(rows):
-    now_utc = datetime.now(timezone.utc)
-    cards = []
-
-    for r in rows:
-        local_time = "—"
-        if r["obs_time"]:
-            try:
-                dt = datetime.fromisoformat(r["obs_time"].replace("Z", "+00:00"))
-                local_time = dt.astimezone(ZoneInfo(r["tz"])).strftime("%Y-%m-%d %H:%M:%S %Z")
-            except (ValueError, KeyError):
-                local_time = r["obs_time"]
-
-        pws_html = "".join(
-            f'<a href="{html.escape(p["source_url"], quote=True)}" target="_blank" rel="noreferrer">'
-            f'{html.escape(p["station_id"])} {html.escape(p["name"] or "")} '
-            f'({p["distance_km"]:.1f}km, {html.escape(p["status"])}; '
-            f'{_fmt(p["temp_c"], "°C")})</a>'
-            for p in r["pws"]
-        ) or '<span class="muted">No verified nearby PWS in registry</span>'
-
-        delta = "—" if r["temp_change"] is None else f"{r['temp_change']:+.1f}°C"
-        age = "—" if r["age_min"] is None else f"{r['age_min']:.0f}m"
-
-        cards.append(f"""
-        <article class="card {r['cls'] if 'cls' in r else ('live' if r['status']=='LIVE' else 'dead')}"
-                 data-icao="{html.escape(r['icao'])}" data-country="{html.escape(r['country'])}">
-          <div class="top">
-            <div><span class="icao">{html.escape(r['icao'])}</span>
-                 <span class="city">{html.escape(r['city'])}</span></div>
-            <span class="status">{html.escape(r['status'])}</span>
-          </div>
-          <div class="temp">{_fmt(r['temp_c'], '°C')}</div>
-          <div class="metrics">
-            <span>Δ obs {delta}</span>
-            <span>Wind {_fmt(r['wind_speed_kt'], 'kt')}</span>
-            <span>Dir {_fmt(r['wind_dir_deg'], '°')}</span>
-            <span>Age {age}</span>
-          </div>
-          <div class="meta">Local obs: {html.escape(local_time)}</div>
-          <div class="raw">{html.escape(r['raw_metar'] or 'No observation')}</div>
-          <div class="pws"><b>PWS</b>{pws_html}</div>
-        </article>""")
-
-    js_rows = [
-        {"icao": r["icao"], "city": r["city"], "country": r["country"], "status": r["status"]}
-        for r in rows
-    ]
-    payload = json.dumps(js_rows, separators=(",", ":")).replace("<", "\\u003c")
-    live_count = sum(r["status"] == "LIVE" for r in rows)
-    stale_count = sum(r["status"] == "STALE" for r in rows)
-
-    return f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WeatherEdge — Airport Mission Control</title>
+<title>WeatherEdge // Live Weather Cockpit</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
-*{{box-sizing:border-box}}
-body{{margin:0;background:#070b10;color:#d7dee7;font:14px ui-monospace,SFMono-Regular,Menlo,monospace}}
-header{{padding:18px 20px;border-bottom:1px solid #202832;position:sticky;top:0;background:#070b10ee;backdrop-filter:blur(8px);z-index:2}}
-h1{{margin:0;color:#fff;font-size:20px}} .sub{{color:#7d8a99;font-size:11px;margin-top:5px}}
-.toolbar{{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}}
-button{{background:#111923;color:#d7dee7;border:1px solid #293442;border-radius:6px;padding:7px 10px;cursor:pointer}}
-button.active{{border-color:#4aa3ff;color:#4aa3ff}}
-main{{padding:18px;max-width:1500px;margin:auto}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}}
-.card{{background:#0d141d;border:1px solid #202b36;border-radius:8px;padding:15px;min-height:225px}}
-.card.live{{border-left:3px solid #3fb950}} .card.stale{{border-left:3px solid #d29922}}
-.card.dead{{border-left:3px solid #6e7681}}
-.top{{display:flex;justify-content:space-between;align-items:center}}
-.icao{{font-size:18px;font-weight:700;color:#fff}} .city{{color:#8b949e;margin-left:8px}}
-.status{{font-size:10px;padding:3px 6px;border-radius:10px;background:#1a7f37;color:#fff}}
-.stale .status{{background:#9e6a03}} .dead .status{{background:#30363d}}
-.temp{{font-size:38px;font-weight:700;color:#58a6ff;margin:18px 0 10px}}
-.metrics{{display:flex;gap:14px;color:#c9d1d9;font-size:12px;flex-wrap:wrap}}
-.meta{{color:#7d8a99;font-size:10px;margin-top:14px}}
-.raw{{margin-top:8px;color:#596574;font-size:10px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-.pws{{margin-top:10px;color:#7d8a99;font-size:10px;line-height:1.6}}
-.pws b{{color:#c9d1d9;margin-right:8px}} .pws a{{display:block;color:#58a6ff;text-decoration:none}}
-.muted{{color:#596574}}
-.summary{{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:15px;color:#8b949e;font-size:12px}}
-.summary b{{color:#d7dee7}} .search{{margin-left:auto;background:#0d141d;border:1px solid #293442;color:#d7dee7;padding:7px;border-radius:6px}}
-.detail{{margin-bottom:18px;background:#0d141d;border:1px solid #293442;border-radius:8px;padding:15px}}.detailhead{{display:flex;gap:12px;align-items:center;flex-wrap:wrap}}.detailhead h2{{margin:0;color:#fff;font-size:16px}}.select{{background:#111923;color:#d7dee7;border:1px solid #293442;border-radius:6px;padding:7px}}.chartwrap{{margin-top:12px;border:1px solid #202b36;border-radius:6px;background:#080d13;overflow:hidden}}#chart{{display:block;width:100%;height:340px}}.axis{{fill:#596574;font-size:10px}}.legend{{display:flex;gap:14px;flex-wrap:wrap;margin-top:9px;font-size:11px}}.legend span{{color:#c9d1d9}}.dot{{display:inline-block;width:9px;height:9px;border-radius:50%;background:#58a6ff;margin-right:5px}}.metardot{{background:#fff}}.compare{{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;margin-top:12px}}.stat{{background:#080d13;border:1px solid #202b36;border-radius:6px;padding:10px}}.stat .k{{font-size:9px;color:#596574}}.stat .v{{font-size:16px;color:#d7dee7;margin-top:5px}}</style></head>
-<body>
-<header><h1>WEATHEREDGE // AIRPORT MISSION CONTROL</h1>
-<div class="sub">Canonical multi-airport observation layer · generated {now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")}</div>
-<div class="toolbar">
-<button class="active" onclick="filterCards('all',this)">ALL</button>
-<button onclick="filterCards('live',this)">LIVE</button><button onclick="filterCards('stale',this)">STALE</button>
-<button onclick="filterCards('us',this)">US</button><button onclick="filterCards('intl',this)">INTL</button>
-<input class="search" id="q" placeholder="search ICAO/city" oninput="searchCards()">
-</div></header>
-<main><div class="summary"><span>Airports: <b>{len(rows)}</b></span>
-<span>Live: <b id="liveCount">{live_count}</b></span><span>Stale: <b>{stale_count}</b></span>
-<span>Refresh: <b id="refresh">{now_utc.strftime("%H:%M:%S UTC")}</b></span></div>
-<section class="detail"><div class="detailhead"><h2>REPLAY LAB // WEATHER + WIND + MARKET</h2>
-<select class="select" id="airportSelect" onchange="loadReplay()"></select><input class="select" id="replayDate" type="date">
-<button onclick="loadReplay()">LOAD DAY</button><button onclick="toggleReplay()" id="playBtn">▶ PLAY</button>
-<select class="select" id="speed" onchange="setSpeed()"><option value="1">1×</option><option value="5">5×</option><option value="20" selected>20×</option><option value="60">60×</option></select>
-<a class="windy" id="windyLink" target="_blank" rel="noreferrer">WINDY LIVE ↗</a><span class="muted" id="labStatus">—</span></div>
-<div class="replaygrid"><div class="mapwrap"><div class="maptitle">HISTORICAL SENSOR MAP</div><svg id="map" viewBox="0 0 700 430"></svg></div>
-<div class="windywrap"><div class="maptitle">WINDY LIVE MAP</div><iframe id="windyFrame" title="Windy live weather map" loading="lazy"></iframe></div></div>
-<div class="timeline"><input id="timeSlider" type="range" min="0" max="1439" value="0" oninput="seekReplay(this.value)"><div class="timeLabels"><span id="replayClock">—</span><span id="replayEvent">—</span></div></div>
-<div class="chartwrap"><svg id="chart" viewBox="0 0 1000 340" preserveAspectRatio="none"></svg></div><div class="legend" id="legend"></div><div class="compare" id="compare"></div></section><section class="grid" id="grid">{''.join(cards)}</section></main>
+*{box-sizing:border-box}body{margin:0;background:#05080c;color:#dce5ee;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+header{position:sticky;top:0;z-index:20;background:#05080cf2;border-bottom:1px solid #1e2935;padding:14px 18px;backdrop-filter:blur(10px)}
+h1{margin:0;font-size:19px;color:#fff;letter-spacing:.04em}.sub{color:#708090;font-size:10px;margin-top:4px}
+.toolbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:11px}button,select{background:#0d141d;color:#dce5ee;border:1px solid #293746;border-radius:6px;padding:7px 9px}button.active{border-color:#58a6ff;color:#58a6ff}.live-dot{color:#3fb950}.search{margin-left:auto}
+main{max-width:1600px;margin:auto;padding:14px}.sourcebar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px}.source{background:#0b1118;border:1px solid #202c38;border-radius:6px;padding:7px 9px}.source b{color:#fff}.ok{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}
+.hero{display:grid;grid-template-columns:1.35fr .8fr;gap:12px;margin-bottom:12px}.panel{background:#0a1017;border:1px solid #202c38;border-radius:8px;padding:13px}.panel h2{font-size:12px;margin:0 0 10px;color:#fff}
+#map{height:470px;border-radius:6px;background:#0b1118}.leaflet-container{background:#080d12}.leaflet-control{font-family:inherit}.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#0b1118;color:#dce5ee}.leaflet-popup-content{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.weather-map iframe{width:100%;height:470px;border:0;border-radius:6px;background:#080d12}.maptabs{display:flex;gap:6px;margin-bottom:8px}
+.detail{display:grid;grid-template-columns:1.1fr .9fr;gap:12px;margin-bottom:12px}.chart{height:310px;width:100%;display:block;background:#070c12;border:1px solid #18232e;border-radius:6px}.chart text{fill:#718092;font-size:10px}.chart line{stroke:#1c2732}.chart .metar{stroke:#fff}.chart .pws{stroke:#58a6ff}.chart .forecast{stroke:#d29922;stroke-dasharray:6 5}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.metric{background:#070c12;border:1px solid #18232e;border-radius:6px;padding:9px}.metric small{display:block;color:#657586;font-size:9px}.metric strong{display:block;color:#fff;font-size:16px;margin-top:5px}.market{margin-top:10px;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.bucket{background:#070c12;border:1px solid #18232e;border-radius:5px;padding:7px}.bucket b{color:#fff}.bucket small{display:block;color:#6f7d8d}.edge-pos{color:#3fb950}.edge-neg{color:#f85149}
+.airports{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:10px}.airport-card{background:#0a1017;border:1px solid #202c38;border-radius:8px;padding:12px}.airport-card.live{border-left:3px solid #3fb950}.airport-card.stale{border-left:3px solid #d29922}.airport-card.dead{border-left:3px solid #f85149}.card-head{display:flex;justify-content:space-between}.card-head b{font-size:17px;color:#fff}.card-head span{color:#778696;margin-left:8px}.pill{font-style:normal;font-size:9px;padding:3px 6px;border-radius:9px;background:#303944}.pill.live{background:#1a7f37;color:#fff}.pill.stale{background:#9e6a03;color:#fff}.pill.dead{background:#303944}.bigtemp{font-size:35px;font-weight:700;color:#58a6ff;margin:14px 0 8px}.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.grid4 div{background:#070c12;border-radius:5px;padding:7px}.grid4 small{display:block;color:#657586;font-size:8px}.grid4 strong{display:block;margin-top:3px}.raw{margin-top:9px;color:#5d6b79;font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pwsline{margin-top:8px;color:#8492a0;font-size:10px;line-height:1.6}
+.notice{color:#d29922;background:#171208;border:1px solid #4a3713;border-radius:6px;padding:9px;margin-top:8px}.footer{color:#566474;font-size:9px;padding:18px 2px}
+@media(max-width:1000px){.hero,.detail{grid-template-columns:1fr}.weather-map iframe,#map{height:360px}.market{grid-template-columns:repeat(2,1fr)}}
+</style></head><body>
+<header><h1>WEATHEREDGE // LIVE WEATHER COCKPIT <span class="live-dot">●</span></h1>
+<div class="sub">Live observations · PWS · satellite basemap · Windy forecast map · forecast · Polymarket · source freshness</div>
+<div class="toolbar"><button class="active" onclick="setMode('all',this)">ALL</button><button onclick="setMode('live',this)">LIVE</button><button onclick="setMode('stale',this)">STALE</button>
+<select id="airportSelect" onchange="selectAirport(this.value)"></select><input id="search" class="search" placeholder="filter airport" oninput="filterCards()">
+<span id="clock">—</span></div></header>
+<main>
+<div class="sourcebar" id="sources"><span class="source">METAR <b>—</b></span><span class="source">PWS <b>—</b></span><span class="source">NWP <b>—</b></span><span class="source">MARKET <b>—</b></span><span class="source">UI <b class="ok">LIVE</b></span></div>
+<div class="hero"><section class="panel"><h2>🛰 SATELLITE / STATION MAP</h2><div class="maptabs"><button id="streetBtn" onclick="mapMode('street',this)">STREET</button><button id="satBtn" class="active" onclick="mapMode('sat',this)">SATELLITE</button><button onclick="centerSelected()">CENTER</button></div><div id="map"></div></section>
+<section class="panel weather-map"><h2>🌦 LIVE WEATHER MAP // WIND / CLOUD / TEMP</h2><iframe id="windy" loading="lazy" title="Windy weather map"></iframe><div class="sub" style="margin-top:6px">External live map. WeatherEdge does not treat the map as the settlement source.</div></section></div>
+<div class="detail"><section class="panel"><h2>🌡 SELECTED AIRPORT // 24H SENSOR TRAJECTORY</h2><div id="selectedTitle" class="sub">—</div><svg id="chart" class="chart" viewBox="0 0 1000 310" preserveAspectRatio="none"></svg></section>
+<section class="panel"><h2>TRADING / FORECAST STATE</h2><div class="metrics"><div class="metric"><small>AIRPORT</small><strong id="dTemp">—</strong></div><div class="metric"><small>24H MAX</small><strong id="dMax">—</strong></div><div class="metric"><small>FORECAST</small><strong id="dForecast">—</strong></div><div class="metric"><small>PWS SPREAD</small><strong id="dSpread">—</strong></div></div><div class="market" id="market"></div><div id="pwsNotice" class="notice">PWS registry is present, but live PWS observations require a configured Weather Company API key.</div></section></div>
+<section class="airports" id="airportCards"><article class="airport-card" id="card-FACT" data-icao="FACT">
+<div class="card-head"><div><b>FACT</b><span>Cape Town</span></div><i id="status-FACT" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-FACT">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-FACT">—</strong></div><div><small>WIND</small><strong id="wind-FACT">—</strong></div><div><small>DIR</small><strong id="dir-FACT">—</strong></div><div><small>AGE</small><strong id="age-FACT">—</strong></div></div>
+<div class="raw" id="raw-FACT">waiting for live observation…</div>
+<div class="pwsline" id="pws-FACT">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-SAEZ" data-icao="SAEZ">
+<div class="card-head"><div><b>SAEZ</b><span>Buenos Aires</span></div><i id="status-SAEZ" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-SAEZ">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-SAEZ">—</strong></div><div><small>WIND</small><strong id="wind-SAEZ">—</strong></div><div><small>DIR</small><strong id="dir-SAEZ">—</strong></div><div><small>AGE</small><strong id="age-SAEZ">—</strong></div></div>
+<div class="raw" id="raw-SAEZ">waiting for live observation…</div>
+<div class="pwsline" id="pws-SAEZ">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-LEMD" data-icao="LEMD">
+<div class="card-head"><div><b>LEMD</b><span>Madrid</span></div><i id="status-LEMD" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-LEMD">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-LEMD">—</strong></div><div><small>WIND</small><strong id="wind-LEMD">—</strong></div><div><small>DIR</small><strong id="dir-LEMD">—</strong></div><div><small>AGE</small><strong id="age-LEMD">—</strong></div></div>
+<div class="raw" id="raw-LEMD">waiting for live observation…</div>
+<div class="pwsline" id="pws-LEMD">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-KATL" data-icao="KATL">
+<div class="card-head"><div><b>KATL</b><span>Atlanta</span></div><i id="status-KATL" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-KATL">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-KATL">—</strong></div><div><small>WIND</small><strong id="wind-KATL">—</strong></div><div><small>DIR</small><strong id="dir-KATL">—</strong></div><div><small>AGE</small><strong id="age-KATL">—</strong></div></div>
+<div class="raw" id="raw-KATL">waiting for live observation…</div>
+<div class="pwsline" id="pws-KATL">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-KSFO" data-icao="KSFO">
+<div class="card-head"><div><b>KSFO</b><span>San Francisco</span></div><i id="status-KSFO" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-KSFO">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-KSFO">—</strong></div><div><small>WIND</small><strong id="wind-KSFO">—</strong></div><div><small>DIR</small><strong id="dir-KSFO">—</strong></div><div><small>AGE</small><strong id="age-KSFO">—</strong></div></div>
+<div class="raw" id="raw-KSFO">waiting for live observation…</div>
+<div class="pwsline" id="pws-KSFO">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-KSEA" data-icao="KSEA">
+<div class="card-head"><div><b>KSEA</b><span>Seattle</span></div><i id="status-KSEA" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-KSEA">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-KSEA">—</strong></div><div><small>WIND</small><strong id="wind-KSEA">—</strong></div><div><small>DIR</small><strong id="dir-KSEA">—</strong></div><div><small>AGE</small><strong id="age-KSEA">—</strong></div></div>
+<div class="raw" id="raw-KSEA">waiting for live observation…</div>
+<div class="pwsline" id="pws-KSEA">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-EGLC" data-icao="EGLC">
+<div class="card-head"><div><b>EGLC</b><span>London</span></div><i id="status-EGLC" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-EGLC">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-EGLC">—</strong></div><div><small>WIND</small><strong id="wind-EGLC">—</strong></div><div><small>DIR</small><strong id="dir-EGLC">—</strong></div><div><small>AGE</small><strong id="age-EGLC">—</strong></div></div>
+<div class="raw" id="raw-EGLC">waiting for live observation…</div>
+<div class="pwsline" id="pws-EGLC">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-KBKF" data-icao="KBKF">
+<div class="card-head"><div><b>KBKF</b><span>Buckley</span></div><i id="status-KBKF" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-KBKF">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-KBKF">—</strong></div><div><small>WIND</small><strong id="wind-KBKF">—</strong></div><div><small>DIR</small><strong id="dir-KBKF">—</strong></div><div><small>AGE</small><strong id="age-KBKF">—</strong></div></div>
+<div class="raw" id="raw-KBKF">waiting for live observation…</div>
+<div class="pwsline" id="pws-KBKF">PWS: no verified live observations</div>
+</article><article class="airport-card" id="card-RJTT" data-icao="RJTT">
+<div class="card-head"><div><b>RJTT</b><span>Tokyo</span></div><i id="status-RJTT" class="pill dead">NO DATA</i></div>
+<div class="bigtemp" id="temp-RJTT">—°C</div>
+<div class="grid4"><div><small>DEW</small><strong id="dew-RJTT">—</strong></div><div><small>WIND</small><strong id="wind-RJTT">—</strong></div><div><small>DIR</small><strong id="dir-RJTT">—</strong></div><div><small>AGE</small><strong id="age-RJTT">—</strong></div></div>
+<div class="raw" id="raw-RJTT">waiting for live observation…</div>
+<div class="pwsline" id="pws-RJTT">PWS: no verified live observations</div>
+</article></section>
+<div class="footer">WeatherEdge cockpit v2 · data timestamps are source observation/fetch times · stale status is based on source age, not prediction quality.</div>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const airports={{payload}};
-let mode='all';
-function apply(){{const q=document.getElementById('q').value.toLowerCase();let live=0;
-document.querySelectorAll('.card').forEach((c,i)=>{{const a=airports[i];
-const okq=!q||(a.icao+' '+a.city).toLowerCase().includes(q);
-const okm=mode==='all'||(mode==='live'&&a.status==='LIVE')||(mode==='stale'&&a.status==='STALE')||(mode==='us'&&a.country==='US')||(mode==='intl'&&a.country!=='US');
-if(a.status==='LIVE')live++;c.style.display=okq&&okm?'block':'none'}});document.getElementById('liveCount').textContent=live}}
-function filterCards(m,b){{mode=m;document.querySelectorAll('button').forEach(x=>x.classList.remove('active'));b.classList.add('active');apply()}}
-
-const labAirports={{payload}};
-let replayData=null,replayTimer=null,replayMinutes=0,replaySpeed=20;
-function fillAirportSelect(){{const s=document.getElementById('airportSelect');if(s.options.length)return;labAirports.forEach(a=>{{const o=document.createElement('option');o.value=a.icao;o.textContent=a.icao+' — '+a.city;s.appendChild(o)}})}}
-function fmt(v,s=''){{return v==null?'—':Number(v).toFixed(1)+s}}
-function isoAtMinute(min){{return new Date(replayData.replay_start_utc).getTime()+Number(min)*60000}}
-function latestAt(rows,t,key='obs_time'){{let best=null;for(const r of rows||[]){{const d=new Date(r[key]);if(!isNaN(d)&&d.getTime()<=t&&(!best||d.getTime()>new Date(best[key]).getTime()))best=r}}return best}}
-function setWindy(){{const a=labAirports.find(x=>x.icao===document.getElementById('airportSelect').value);if(!a)return;document.getElementById('windyLink').href='https://www.windy.com/'+a.lat+','+a.lon+',9';document.getElementById('windyFrame').src='https://embed.windy.com/embed2.html?lat='+a.lat+'&lon='+a.lon+'&detailLat='+a.lat+'&detailLon='+a.lon+'&width=650&height=400&zoom=9&level=surface&overlay=temp&product=ecmwf&menu=&message=true&marker=true&calendar=now&type=map&location=coordinates&detail=true&metricWind=kt&metricTemp=C'}}
-async function loadReplay(){{fillAirportSelect();setWindy();const icao=document.getElementById('airportSelect').value;let date=document.getElementById('replayDate').value;if(!date){{date=new Date().toISOString().slice(0,10);document.getElementById('replayDate').value=date}}document.getElementById('labStatus').textContent='loading '+icao+' '+date+'…';try{{const r=await fetch('/api/airport/'+icao+'/replay?date='+encodeURIComponent(date),{{cache:'no-store'}});replayData=await r.json();if(replayData.error)throw new Error(replayData.error);replayMinutes=0;document.getElementById('timeSlider').value=0;document.getElementById('labStatus').textContent='loaded '+replayData.metar.length+' METAR · '+replayData.pws.length+' PWS · '+replayData.markets.length+' market rows';renderReplay()}}catch(e){{document.getElementById('labStatus').textContent='ERROR: '+e.message}}
-function setSpeed(){{replaySpeed=Number(document.getElementById('speed').value)}}
-function toggleReplay(){{if(replayTimer){{clearInterval(replayTimer);replayTimer=null;document.getElementById('playBtn').textContent='▶ PLAY';return}}document.getElementById('playBtn').textContent='⏸ PAUSE';replayTimer=setInterval(()=>{{replayMinutes+=replaySpeed;if(replayMinutes>=1439){{replayMinutes=1439;toggleReplay()}}document.getElementById('timeSlider').value=replayMinutes;renderReplay()}},250)}}
-function seekReplay(v){{replayMinutes=Number(v);renderReplay()}}
-function currentSnapshot(){{const t=isoAtMinute(replayMinutes),metar=latestAt(replayData.metar,t),by={{}};for(const p of replayData.pws){{(by[p.station_id]??=[]).push(p)}}const stations=(replayData.stations||[]).map(s=>({{...s,obs:latestAt(by[s.station_id],t)}}));const buckets={{}};for(const m of replayData.markets||[]){{if(new Date(m.fetched_at).getTime()<=t){{const old=buckets[m.bucket_label];if(!old||new Date(m.fetched_at)>new Date(old.fetched_at))buckets[m.bucket_label]=m}}return{{t,metar,stations,markets:Object.values(buckets).sort((a,b)=>(a.yes_price_cents??0)-(b.yes_price_cents??0))}}
-function renderReplay(){{if(!replayData)return;const s=currentSnapshot(),dt=new Date(s.t);document.getElementById('replayClock').textContent=dt.toLocaleString('en-GB',{{timeZone:replayData.timezone,hour:'2-digit',minute:'2-digit',second:'2-digit'}})+' '+replayData.timezone;document.getElementById('replayEvent').textContent=s.metar?('METAR '+fmt(s.metar.temp_c,'°C')+' · wind '+(s.metar.wind_dir_deg==null?'—':Math.round(s.metar.wind_dir_deg)+'°')+' / '+fmt(s.metar.wind_speed_kt,'kt')):'NO AIRPORT OBSERVATION';drawReplayMap(s);drawReplayChart();drawReplayCompare(s)}}
-function drawReplayMap(s){{const svg=document.getElementById('map'),W=700,H=400,pad=55,pts=[{{lat:replayData.airport.lat,lon:replayData.airport.lon,temp:s.metar?.temp_c,wind:s.metar,airport:true,label:replayData.icao}},...s.stations.map(x=>({{lat:x.latitude,lon:x.longitude,temp:x.obs?.temp_c,wind:x.obs,airport:false,label:x.station_id}}))].filter(x=>x.lat!=null&&x.lon!=null);if(!pts.length){{svg.innerHTML='<text x="20" y="40" class="axis">NO STATION GEOMETRY</text>';return}}let minLat=Math.min(...pts.map(p=>p.lat)),maxLat=Math.max(...pts.map(p=>p.lat)),minLon=Math.min(...pts.map(p=>p.lon)),maxLon=Math.max(...pts.map(p=>p.lon));const lp=Math.max((maxLat-minLat)*.25,.01),op=Math.max((maxLon-minLon)*.25,.01);minLat-=lp;maxLat+=lp;minLon-=op;maxLon+=op;const x=p=>pad+(p.lon-minLon)/(maxLon-minLon)*(W-2*pad),y=p=>H-pad-(p.lat-minLat)/(maxLat-minLat)*(H-2*pad);let out='<rect x="0" y="0" width="'+W+'" height="'+H+'" fill="#080d13"/>';for(let i=0;i<=5;i++){{const xx=pad+i*(W-2*pad)/5,yy=pad+i*(H-2*pad)/5;out+='<line x1="'+xx+'" x2="'+xx+'" y1="'+pad+'" y2="'+(H-pad)+'" stroke="#17202a"/><line x1="'+pad+'" x2="'+(W-pad)+'" y1="'+yy+'" y2="'+yy+'" stroke="#17202a"/>'}}for(const p of pts){{const cx=x(p),cy=y(p),r=p.airport?9:7;out+='<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="'+(p.airport?'#fff':'#58a6ff')+'" stroke="#0b1016" stroke-width="2"/>';out+='<text x="'+(cx+11)+'" y="'+(cy+4)+'" fill="#d7dee7" font-size="11">'+p.label+' '+(p.temp==null?'—':Number(p.temp).toFixed(1)+'°C')+'</text>';if(p.wind?.wind_dir_deg!=null){{const rad=(Number(p.wind.wind_dir_deg)-90)*Math.PI/180,len=18,ex=cx+Math.cos(rad)*len,ey=cy+Math.sin(rad)*len;out+='<line x1="'+cx+'" y1="'+cy+'" x2="'+ex+'" y2="'+ey+'" stroke="#ffcc66" stroke-width="2"/><polygon points="'+ex+','+ey+' '+(ex-5*Math.cos(rad-.5))+','+(ey-5*Math.sin(rad-.5))+' '+(ex-5*Math.cos(rad+.5))+','+(ey-5*Math.sin(rad+.5))+'" fill="#ffcc66"/>'}}svg.innerHTML=out}}
-function drawReplayChart(){{const svg=document.getElementById('chart'),d=replayData,W=1000,H=340,L=48,R=15,T=18,B=30,all=[...d.metar,...d.pws].filter(x=>x.temp_c!=null);if(!all.length){{svg.innerHTML='<text x="50" y="80" class="axis">NO HISTORICAL SENSOR DATA</text>';return}}const min=Math.floor(Math.min(...all.map(x=>x.temp_c))-1),max=Math.ceil(Math.max(...all.map(x=>x.temp_c))+1),range=Math.max(1,max-min),start=new Date(d.replay_start_utc).getTime(),x=t=>L+(new Date(t).getTime()-start)/86400000*(W-L-R),y=v=>T+(max-v)/range*(H-T-B);let out='';for(let v=min;v<=max;v++){{const yy=y(v);out+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+yy+'" y2="'+yy+'" stroke="#202b36"/><text x="5" y="'+(yy+4)+'" class="axis">'+v+'°C</text>'}}const met=d.metar.map(p=>x(p.obs_time)+','+y(p.temp_c)).join(' ');if(met)out+='<polyline fill="none" stroke="#fff" stroke-width="2.5" points="'+met+'"/>';[...new Set(d.pws.map(p=>p.station_id))].forEach((id,i)=>{{const pts=d.pws.filter(p=>p.station_id===id&&p.temp_c!=null).map(p=>x(p.obs_time)+','+y(p.temp_c)).join(' ');if(pts)out+='<polyline fill="none" stroke="hsl('+(190+i*55)+',80%,60%)" stroke-width="1.5" points="'+pts+'"/>'}});const nowX=x(new Date(isoAtMinute(replayMinutes)));out+='<line x1="'+nowX+'" x2="'+nowX+'" y1="'+T+'" y2="'+(H-B)+'" stroke="#ffcc66" stroke-width="2"/>';svg.innerHTML=out;document.getElementById('legend').innerHTML='<span><i class="dot metardot"></i>Airport/METAR</span>'+[...new Set(d.pws.map(p=>p.station_id))].map((id,i)=>'<span><i class="dot" style="background:hsl('+(190+i*55)+',80%,60%)"></i>'+id+'</span>').join('')}}
-function drawReplayCompare(s){{const near=s.stations.filter(x=>x.obs?.temp_c!=null).sort((a,b)=>(a.distance_km??999)-(b.distance_km??999))[0],marketText=s.markets.slice(0,8).map(m=>m.bucket_label+' '+fmt(m.yes_price_cents,'¢')).join(' · '),o=replayData.outcome,vals=[['AIRPORT TEMP',fmt(s.metar?.temp_c,'°C')],['NEAREST PWS',fmt(near?.obs?.temp_c,'°C')],['PWS Δ',near&&s.metar?fmt(near.obs.temp_c-s.metar.temp_c,'°C'):'—'],['AIRPORT WIND',s.metar?.wind_dir_deg!=null?Math.round(s.metar.wind_dir_deg)+'° / '+fmt(s.metar.wind_speed_kt,'kt'):'—'],['MARKET LADDER',marketText||'—'],['MARKET BUCKETS',String(s.markets.length)],['SETTLED MAX',o?fmt(o.actual_max_c,'°C'):'—'],['PWS STATIONS',String(s.stations.filter(x=>x.obs).length)]];document.getElementById('compare').innerHTML=vals.map(v=>'<div class="stat"><div class="k">'+v[0]+'</div><div class="v">'+v[1]+'</div></div>').join('')}}
-fillAirportSelect();document.getElementById('replayDate').value=new Date().toISOString().slice(0,10);loadReplay();
-setTimeout(()=>location.reload(),60000);apply();
-</script></body></html>"""
-
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        api = sensor_api.handle(self.path)
-        if api:
-            status, payload = api
-            body = json.dumps(payload, separators=(",", ":")).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        if self.path != "/":
-            self.send_response(404)
-            self.end_headers()
-            return
-        try:
-            body = render(get_airport_rows()).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as exc:
-            body = f"Dashboard error: {html.escape(str(exc))}".encode()
-            self.send_response(500)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(body)
-
-    def log_message(self, *_):
-        pass
-
-
-if __name__ == "__main__":
-    print(f"WeatherEdge Airport Mission Control: http://localhost:{PORT}")
-    HTTPServer(("localhost", PORT), Handler).serve_forever()
+const AIRPORTS=[{"icao":"FACT","city":"Cape Town","market_city":"cape-town","country":"ZA","tz":"Africa/Johannesburg","lat":-33.97403,"lon":18.60433},{"icao":"SAEZ","city":"Buenos Aires","market_city":"buenos-aires","country":"AR","tz":"America/Argentina/Buenos_Aires","lat":-34.82222,"lon":-58.53583},{"icao":"LEMD","city":"Madrid","market_city":"madrid","country":"ES","tz":"Europe/Madrid","lat":40.47222,"lon":-3.56083},{"icao":"KATL","city":"Atlanta","market_city":"atlanta","country":"US","tz":"America/New_York","lat":33.64073,"lon":-84.42774},{"icao":"KSFO","city":"San Francisco","market_city":"san-francisco","country":"US","tz":"America/Los_Angeles","lat":37.62131,"lon":-122.37896},{"icao":"KSEA","city":"Seattle","market_city":"seattle","country":"US","tz":"America/Los_Angeles","lat":47.45025,"lon":-122.30882},{"icao":"EGLC","city":"London","market_city":"london","country":"GB","tz":"Europe/London","lat":51.50528,"lon":0.05528},{"icao":"KBKF","city":"Buckley","market_city":"denver","country":"US","tz":"America/Denver","lat":39.70167,"lon":-104.75167},{"icao":"RJTT","city":"Tokyo","market_city":"tokyo","country":"JP","tz":"Asia/Tokyo","lat":35.54939,"lon":139.77984}];
+let selected=AIRPORTS[0]?.icao||'FACT', mode='all', liveState={}, map, satLayer, streetLayer, markers={};
+function esc(x){return String(x??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function fmt(v,s=''){return v==null?'—':(typeof v==='number'?v.toFixed(1):v)+s}
+function ageText(a){return a==null?'—':a<1?Math.round(a*60)+'s':Math.round(a)+'m'}
+function status(age){if(age==null)return ['NO DATA','dead'];if(age<=30)return ['LIVE','live'];if(age<=90)return ['STALE','stale'];return ['OFFLINE','dead']}
+function initMap(){map=L.map('map',{zoomControl:true}).setView([AIRPORTS[0].lat,AIRPORTS[0].lon],5);streetLayer=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'});satLayer=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Tiles © Esri'});satLayer.addTo(map);AIRPORTS.forEach(a=>{const m=L.marker([a.lat,a.lon]).addTo(map).bindPopup('<b>'+a.icao+'</b> '+esc(a.city)+'<br><span id="pop-'+a.icao+'">loading…</span>');markers[a.icao]=m})}
+function mapMode(modeName,btn){if(modeName==='sat'){streetLayer.remove();satLayer.addTo(map)}else{satLayer.remove();streetLayer.addTo(map)}document.querySelectorAll('.maptabs button').forEach(x=>x.classList.remove('active'));btn.classList.add('active')}
+function centerSelected(){const a=AIRPORTS.find(x=>x.icao===selected);if(a){map.setView([a.lat,a.lon],10);markers[a.icao].openPopup()}}
+function setMode(m,b){mode=m;document.querySelectorAll('.toolbar button').forEach(x=>x.classList.remove('active'));b.classList.add('active');filterCards()}
+function filterCards(){const q=document.getElementById('search').value.toLowerCase();document.querySelectorAll('.airport-card').forEach(c=>{const a=liveState[c.dataset.icao]||{};const st=status(a.metar?.age_min)[1];const text=(c.dataset.icao+' '+(a.city||'')).toLowerCase();const okq=!q||text.includes(q);const okm=mode==='all'||st===mode; c.style.display=okq&&okm?'block':'none'})}
+function selectAirport(icao){selected=icao;document.getElementById('airportSelect').value=icao;const a=AIRPORTS.find(x=>x.icao===icao);document.getElementById('selectedTitle').textContent=icao+' — '+a.city;updateWindy(a);centerSelected();loadDetail()}
+function updateWindy(a){document.getElementById('windy').src='https://embed.windy.com/embed2.html?lat='+a.lat+'&lon='+a.lon+'&detailLat='+a.lat+'&detailLon='+a.lon+'&width=900&height=470&zoom=8&level=surface&overlay=temp&product=ecmwf&menu=&message=true&marker=true&calendar=now&type=map&location=coordinates&detail=true&metricWind=kt&metricTemp=C'}
+function updateCard(a,d){liveState[a.icao]=d;const m=d.metar||{}, [label,cls]=status(m.age_min);const card=document.getElementById('card-'+a.icao);card.className='airport-card '+cls;document.getElementById('status-'+a.icao).textContent=label;document.getElementById('status-'+a.icao).className='pill '+cls;document.getElementById('temp-'+a.icao).textContent=fmt(m.temp_c,'°C');document.getElementById('dew-'+a.icao).textContent=fmt(m.dewpoint_c,'°C');document.getElementById('wind-'+a.icao).textContent=fmt(m.wind_speed_kt,'kt');document.getElementById('dir-'+a.icao).textContent=fmt(m.wind_dir_deg,'°');document.getElementById('age-'+a.icao).textContent=ageText(m.age_min);document.getElementById('raw-'+a.icao).textContent=m.raw_metar||'No observation';const p=d.pws||[];document.getElementById('pws-'+a.icao).innerHTML=p.length?'PWS: '+p.slice(0,3).map(x=>'<b>'+esc(x.station_id)+'</b> '+fmt(x.temp_c,'°C')+' '+ageText(x.age_min)+' · '+fmt(x.distance_km,'km')).join(' | '):'PWS: no live observations';const pop=document.getElementById('pop-'+a.icao);if(pop)pop.textContent=fmt(m.temp_c,'°C')+' · '+label+' · '+ageText(m.age_min);if(a.icao===selected)updateDetail(d)}
+function updateSources(){const vals=Object.values(liveState);const ages=(key)=>vals.map(x=>x.sources?.[key]).filter(x=>x!=null);const min=(key)=>{const v=ages(key);return v.length?Math.min(...v):null};const sourceHtml=[['METAR','metar_age_min'],['PWS','pws_age_min'],['NWP','forecast_age_min'],['MARKET','market_age_min']].map(([n,k])=>{const a=min(k);const c=a==null?'warn':'ok';return '<span class="source">'+n+' <b class="'+c+'">'+(a==null?'NO DATA':ageText(a))+'</b></span>'}).join('');document.getElementById('sources').innerHTML=sourceHtml+'<span class="source">UI <b class="ok">LIVE</b></span>'}
+async function poll(){try{const results=await Promise.all(AIRPORTS.map(a=>fetch('/api/airport/'+a.icao+'/live',{cache:'no-store'}).then(r=>r.json()).catch(()=>({error:'fetch'}))));results.forEach((d,i)=>{if(!d.error)updateCard(AIRPORTS[i],d)});updateSources();document.getElementById('clock').textContent=new Date().toLocaleTimeString()+' · refresh 5s';filterCards()}catch(e){}}
+async function loadDetail(){try{const [ts,tr]=await Promise.all([fetch('/api/airport/'+selected+'/timeseries?hours=24',{cache:'no-store'}).then(r=>r.json()),fetch('/api/airport/'+selected+'/trading',{cache:'no-store'}).then(r=>r.json())]);drawChart(ts);drawTrading(tr)}catch(e){}}
+function drawChart(d){const svg=document.getElementById('chart'),W=1000,H=310,L=45,R=15,T=15,B=30,rows=[...(d.metar||[]),...(d.series||[])].filter(x=>x.temp_c!=null);if(!rows.length){svg.innerHTML='<text x="45" y="60">NO 24H SENSOR HISTORY</text>';return}const min=Math.floor(Math.min(...rows.map(x=>x.temp_c))-1),max=Math.ceil(Math.max(...rows.map(x=>x.temp_c))+1),range=Math.max(1,max-min),start=new Date(Date.now()-24*3600000).getTime(),end=Date.now(),x=t=>L+(new Date(t).getTime()-start)/(end-start)*(W-L-R),y=v=>T+(max-v)/range*(H-T-B);let o='';for(let v=min;v<=max;v++){const yy=y(v);o+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+yy+'" y2="'+yy+'"/><text x="5" y="'+(yy+4)+'">'+v+'°</text>'}const met=(d.metar||[]).map(p=>x(p.obs_time)+','+y(p.temp_c)).join(' ');if(met)o+='<polyline class="metar" fill="none" stroke-width="2.5" points="'+met+'"/>';const ids=[...new Set((d.series||[]).map(p=>p.station_id))];ids.slice(0,6).forEach(id=>{const pts=d.series.filter(p=>p.station_id===id&&p.temp_c!=null).map(p=>x(p.obs_time)+','+y(p.temp_c)).join(' ');if(pts)o+='<polyline class="pws" fill="none" stroke-width="1.5" opacity=".65" points="'+pts+'"/>'});svg.innerHTML=o}
+function updateDetail(d){const m=d.metar||{},p=(d.pws||[]).filter(x=>x.temp_c!=null);document.getElementById('dTemp').textContent=fmt(m.temp_c,'°C');document.getElementById('dForecast').textContent=d.forecast?fmt(d.forecast.temp_c,'°C'):'—';const mx=p.length?Math.max(...p.map(x=>x.temp_c)):null;document.getElementById('dMax').textContent=mx==null?'—':fmt(mx,'°C');const near=p.sort((a,b)=>(a.distance_km||999)-(b.distance_km||999))[0];document.getElementById('dSpread').textContent=near&&m.temp_c!=null?fmt(near.temp_c-m.temp_c,'°C'):'—';const notice=document.getElementById('pwsNotice');notice.textContent=p.length?'PWS LIVE: '+p.length+' enabled stations · nearest '+fmt(near.distance_km,'km')+' · spread '+fmt(near.temp_c-m.temp_c,'°C'):'PWS registry has no live observations. Configure WEATHER_UNDERGROUND_API_KEY for Weather Company PWS data.'}
+function drawTrading(d){const box=document.getElementById('market');if(!d.market||!d.market.length){box.innerHTML='<div class="bucket">NO MARKET DATA</div>';return}box.innerHTML=d.market.slice(0,8).map(x=>'<div class="bucket"><b>'+esc(x.bucket)+'</b><small>mkt '+fmt(x.market_prob*100,'%')+' · fair '+fmt(x.fair_prob*100,'%')+'</small><strong class="'+(x.edge_cents>0?'edge-pos':x.edge_cents<0?'edge-neg':'')+'">'+(x.edge_cents>0?'+':'')+fmt(x.edge_cents,'¢')+'</strong></div>').join('')}
+const sel=document.getElementById('airportSelect');AIRPORTS.forEach(a=>{const o=document.createElement('option');o.value=a.icao;o.textContent=a.icao+' — '+a.city;sel.appendChild(o)});initMap();selectAirport(selected);poll();setInterval(poll,5000);setInterval(loadDetail,15000);setInterval(()=>{if(selected)loadDetail()},15000);
+</script></body></html>
