@@ -293,6 +293,8 @@ def live(icao):
                 "market_age_min": min((age(m["fetched_at"]) for m in markets), default=None),
             },
         }
+    finally:
+        con.close()
 
 
 def handle(path):
