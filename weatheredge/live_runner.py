@@ -14,6 +14,7 @@ from . import pws_discovery
 from . import pws_multi_collector
 from . import pws_rapid_collector
 from . import reservoir_tmax
+from . import saeon_collector
 
 logger = setup_logger("live_runner")
 
@@ -29,6 +30,7 @@ def run_forever():
     last_pws = 0.0
     last_pws_rapid = 0.0
     last_pws_discovery = 0.0
+    last_saeon = 0.0
     last_reservoir = 0.0
 
     while True:
@@ -56,6 +58,11 @@ def run_forever():
             logger.info("polling live PWS")
             pws_multi_collector.run()
             last_pws = now
+
+        if now - last_saeon >= 5 * 60:
+            logger.info("polling high-frequency SAEON sensors")
+            saeon_collector.run()
+            last_saeon = now
 
         if now - last_pws_rapid >= 15 * 60:
             logger.info("polling PWS rapid 24h history")
