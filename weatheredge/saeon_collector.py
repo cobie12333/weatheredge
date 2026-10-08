@@ -20,6 +20,22 @@ from .db import get_connection, log_collection_attempt, setup_logger, utc_now_is
 
 logger = setup_logger("saeon_collector")
 
+# Station metadata verified from the public SAEON St Josephs MRC page.
+# Raw observation endpoint is intentionally NOT assumed; keep collection disabled
+# until the endpoint is independently verified.
+STJOSEPHS = {
+    "station_id": "STJOSEPHS",
+    "airport_icao": "FACT",
+    "name": "GCT St Josephs MRC weather station",
+    "source": "saeon_lognet",
+    "source_url": "https://lognet.saeon.ac.za/StJosephs/index.html",
+    "latitude": -33.96307,
+    "longitude": 18.57389,
+    "elevation_m": 31.0,
+    "distance_km": 3.0603,
+    "sampling_minutes": 5,
+}
+
 
 def _num(value):
     if value is None or isinstance(value, bool):
@@ -78,6 +94,33 @@ def run():
     data_url = os.getenv("SAEON_STJOSEPHS_DATA_URL")
     con = get_connection()
     try:
+        # Keep the station in the canonical registry even before its raw feed
+        # is verified. This makes it visible to research tooling without
+        # allowing an unverified endpoint to enter the live collector.
+        con.execute(
+            """INSERT INTO saeon_station
+               (station_id, airport_icao, name, source, source_url,
+                latitude, longitude, elevation_m, distance_km,
+                sampling_minutes, status, verified, enabled, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+               ON CONFLICT(station_id) DO UPDATE SET
+                 name=excluded.name, source_url=excluded.source_url,
+                 latitude=excluded.latitude, longitude=excluded.longitude,
+                 elevation_m=excluded.elevation_m, distance_km=excluded.distance_km,
+                 sampling_minutes=excluded.sampling_minutes,
+                 status=excluded.status, verified=excluded.verified,
+                 notes=excluded.notes""",
+            (
+                STJOSEPHS["station_id"], STJOSEPHS["airport_icao"],
+                STJOSEPHS["name"], STJOSEPHS["source"], STJOSEPHS["source_url"],
+                STJOSEPHS["latitude"], STJOSEPHS["longitude"],
+                STJOSEPHS["elevation_m"], STJOSEPHS["distance_km"],
+                STJOSEPHS["sampling_minutes"], "candidate", 1,
+                "Public station page verified; raw CSV/JSON endpoint still pending independent verification.",
+            ),
+        )
+        con.commit()
+
         enabled = con.execute(
             "SELECT enabled FROM saeon_station WHERE station_id='STJOSEPHS'"
         ).fetchone()
