@@ -36,3 +36,42 @@ CREATE TABLE IF NOT EXISTS reservoir_prediction (
     UNIQUE(station_id, market_date, model, cutoff_hour_local, bucket_label)
 );
 CREATE INDEX IF NOT EXISTS idx_reservoir_prediction_station_date ON reservoir_prediction(station_id, market_date, scored_at DESC);
+
+CREATE TABLE IF NOT EXISTS saeon_station (
+    station_id TEXT PRIMARY KEY,
+    airport_icao TEXT NOT NULL,
+    name TEXT,
+    source TEXT NOT NULL,
+    source_url TEXT,
+    latitude REAL,
+    longitude REAL,
+    elevation_m REAL,
+    distance_km REAL,
+    sampling_minutes INTEGER,
+    status TEXT DEFAULT 'unknown',
+    verified INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_saeon_station_airport ON saeon_station(airport_icao);
+
+CREATE TABLE IF NOT EXISTS saeon_obs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    station_id TEXT NOT NULL,
+    airport_icao TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    obs_time TEXT NOT NULL,
+    temp_c REAL,
+    humidity REAL,
+    dewpoint_c REAL,
+    wind_dir_deg REAL,
+    wind_speed REAL,
+    pressure_hpa REAL,
+    solar_radiation_wm2 REAL,
+    source TEXT NOT NULL,
+    is_valid INTEGER NOT NULL DEFAULT 1,
+    raw_payload TEXT NOT NULL,
+    UNIQUE(station_id, obs_time, source)
+);
+CREATE INDEX IF NOT EXISTS idx_saeon_obs_station_time ON saeon_obs(station_id, obs_time DESC);
+CREATE INDEX IF NOT EXISTS idx_saeon_obs_airport_time ON saeon_obs(airport_icao, obs_time DESC);
