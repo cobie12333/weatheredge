@@ -2,12 +2,52 @@
 
 WeatherEdge is a research and paper-trading platform for Cape Town International Airport (FACT) weather prediction markets.
 
-Research pipeline: SAWS + FACT METAR/SPECI + nearby PWS + Windy spatial layer + Polymarket CLOB → probabilistic Tmax model → calibration → chronological walk-forward evaluation → paper-trading signals.
+Research pipeline: SAWS + FACT METAR/SPECI + nearby PWS + Windy spatial layer + Polymarket CLOB → probabilistic Tmax models → calibration → chronological walk-forward evaluation → paper-trading signals.
 
 ## Status
+
 This repository is the source-code handoff. Secrets, `.env`, runtime logs, SQLite databases, generated analysis outputs, and caches are intentionally excluded from Git.
 
+## High-frequency SAEON FACT research sensor
+
+WeatherEdge now registers the **St Josephs MRC** SAEON station as a FACT research candidate:
+
+- Coordinates: **-33.96307, 18.57389**
+- Elevation: **31 m**
+- Stated update interval: **5 minutes** (signal-quality dependent)
+- Distance from FACT: **~3.06 km**
+- Variables shown by the station: temperature, wind, relative humidity, rainfall and solar radiation
+
+The station is deliberately **not enabled for live ingestion yet**. Its public presentation page is verified, but the underlying raw CSV/JSON observation endpoint must be independently verified before `SAEON_STJOSEPHS_DATA_URL` is configured. This prevents an unverified web endpoint from contaminating the FACT research dataset.
+
+## Experimental reservoir layer
+
+WeatherEdge now includes a stdlib-only Echo State Network (ESN) for daily Tmax bucket probabilities.
+
+The reservoir consumes the pre-noon airport time series plus the nearest available PWS observation at each airport observation time:
+
+- temperature
+- dewpoint
+- wind speed/direction
+- pressure
+- temperature/dewpoint changes
+- time-of-day phase
+- nearest PWS temperature/dewpoint
+- PWS minus airport temperature
+- PWS temperature change
+
+The ESN keeps its recurrent reservoir fixed and trains only a ridge-regularized readout. It outputs a probability distribution over integer Tmax buckets. The live runner scores the layer every 15 minutes and persists results in `reservoir_prediction`.
+
+Run manually:
+
+```bash
+python -m weatheredge.reservoir_runner FACT
+```
+
+This is **research-only** until chronological walk-forward results demonstrate incremental skill versus persistence/NWP and calibration. It does not place orders.
+
 ## Primary data sources
+
 - SAWS/AfriGIS — South African forecasts and observations
 - FACT METAR/SPECI
 - Weather Company PWS API
@@ -16,4 +56,5 @@ This repository is the source-code handoff. Secrets, `.env`, runtime logs, SQLit
 - NOAA/weather.gov WRH Time Series as authoritative settlement source when specified by the market
 
 ## Safety
+
 Paper trading only. Never commit API keys, wallet private keys, or other credentials.
