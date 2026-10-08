@@ -92,6 +92,23 @@ def run_migration():
         else:
             print("forecast_history already exists, skipped")
 
+        # Step 4: seed the screenshot-verified high-frequency SAEON FACT candidate.
+        if table_exists(con, "saeon_station"):
+            con.execute(
+                """INSERT OR IGNORE INTO saeon_station
+                   (station_id, airport_icao, name, source, source_url,
+                    latitude, longitude, elevation_m, distance_km,
+                    sampling_minutes, status, verified, enabled, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "STJOSEPHS", "FACT", "GCT St Josephs MRC weather station",
+                    "saeon_lognet", "https://lognet.saeon.ac.za/StJosephs/index.html",
+                    -33.96307, 18.57389, 31.0, 3.06, 5, "candidate", 1, 0,
+                    "Screenshot-verified page states updates every 5 minutes (signal quality dependent). Raw endpoint must be verified before enabling collection.",
+                ),
+            )
+            print("Seeded SAEON STJOSEPHS candidate")
+
         con.commit()
         print("Migration complete.")
     finally:
