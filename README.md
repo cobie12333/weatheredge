@@ -8,6 +8,18 @@ Research pipeline: SAWS + FACT METAR/SPECI + nearby PWS + Windy spatial layer + 
 
 This repository is the source-code handoff. Secrets, `.env`, runtime logs, SQLite databases, generated analysis outputs, and caches are intentionally excluded from Git.
 
+## High-frequency SAEON FACT research sensor
+
+WeatherEdge now registers the **St Josephs MRC** SAEON station as a FACT research candidate:
+
+- Coordinates: **-33.96307, 18.57389**
+- Elevation: **31 m**
+- Stated update interval: **5 minutes** (signal-quality dependent)
+- Distance from FACT: **~3.06 km**
+- Variables shown by the station: temperature, wind, relative humidity, rainfall and solar radiation
+
+The station is deliberately **not enabled for live ingestion yet**. Its public presentation page is verified, but the underlying raw CSV/JSON observation endpoint must be independently verified before `SAEON_STJOSEPHS_DATA_URL` is configured. This prevents an unverified web endpoint from contaminating the FACT research dataset.
+
 ## Experimental reservoir layer
 
 WeatherEdge now includes a stdlib-only Echo State Network (ESN) for daily Tmax bucket probabilities.
