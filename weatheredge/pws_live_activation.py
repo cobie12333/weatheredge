@@ -15,6 +15,7 @@ from .airports import AIRPORT_BY_ICAO
 from .db import get_connection
 from .nearby_pws_watchlist import PWS_WATCHLIST
 from .pws_discovery import seed_watchlist
+from .pws_registry import PWS_STATIONS
 
 MAX_OBSERVATION_AGE_SECONDS = 60 * 60
 MAX_FUTURE_SKEW_SECONDS = 5 * 60
@@ -100,13 +101,33 @@ def activate_airport(airport_icao, api_key, con, now=None):
         return 0
 
     candidates = [s for s in PWS_WATCHLIST if s["airport_icao"] == code]
-    if not candidates:
-        print(f"{code}: no curated PWS candidates")
+    station_ids = [s["station_id"] for s in candidates]
+
+    # Include previously researched airport-adjacent candidates already present
+    # in the repository, without treating their stored metadata as live proof.
+    for station in PWS_STATIONS:
+        if station["airport_icao"] != code or station["station_id"] in station_ids:
+            continue
+        con.execute(
+            """INSERT OR IGNORE INTO pws_station
+               (station_id, airport_icao, name, source, source_url, latitude,
+                longitude, distance_km, status, verified, enabled, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'candidate', 0, 0, ?)""",
+            (
+                station["station_id"], station["airport_icao"], station["name"],
+                "weatherunderground", station["source_url"], station["lat"],
+                station["lon"], station["distance_km"],
+                "Existing repository candidate; must pass live API probe before use.",
+            ),
+        )
+        station_ids.append(station["station_id"])
+
+    if not station_ids:
+        print(f"{code}: no PWS candidates")
         return 0
 
     activated = 0
-    for candidate in candidates:
-        station_id = candidate["station_id"]
+    for station_id in station_ids
         try:
             payload = pws_api.current(station_id, api_key)
             observations = payload.get("observations") or []
