@@ -103,11 +103,12 @@ jobs:
           stale = dict(good, epoch=int(now.timestamp()) - 7200)
           assert validate_observation("IMATRO5", "FACT", stale, now=now)[1] == "observation_stale"
           PY
-      - name: Live runner import smoke test
+      - name: Live runner and one-command launcher import smoke test
         run: |
           python - <<'PY'
-          from weatheredge import live_runner
+          from weatheredge import live_runner, go_live
           assert live_runner._minutes_for_market({"tz":"Africa/Johannesburg"}) in (15, 60)
+          assert callable(go_live.main)
           PY
       - name: Dashboard render smoke test
         run: |
