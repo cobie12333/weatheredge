@@ -8,23 +8,37 @@ Research pipeline: SAWS + FACT METAR/SPECI + nearby PWS + Windy spatial layer + 
 This repository is the source-code handoff. Secrets, `.env`, runtime logs, SQLite databases, generated analysis outputs, and caches are intentionally excluded from Git.
 
 ## Nearby PWS watchlist and live activation
-The manually curated watchlist is in `weatheredge/nearby_pws_watchlist.py` and contains 65 station IDs grouped by the airport/city codes from the supplied research list. Discovery seeds candidates into the `pws_station` database even without an API key.
+The manually curated watchlist is in `weatheredge/nearby_pws_watchlist.py` and contains 65 station IDs grouped by the airport/city codes from the supplied research list. The discovery job seeds candidates into the `pws_station` database even without an API key.
 
-New watchlist entries start with `verified=0` and `enabled=0`. Coordinates, distance, online status, and feed availability are not assumed.
+New candidates start with `verified=0` and `enabled=0`. Coordinates, distance, online status, and feed availability are not assumed. Both current PWS and rapid-history collectors query only stations marked `live_verified`, `verified=1`, and `enabled=1`.
 
-### Start the live collectors on the laptop
-1. Pull the latest `main` branch.
-2. Set the Weather Underground / Weather Company API key in the shell environment; do not put it in source code, a commit, or the database:
-   `export WEATHER_UNDERGROUND_API_KEY='your-key'`
-3. From the repository root, probe FACT's curated candidates (currently IMATRO5) and enable only if the authenticated API returns a recent observation with matching station ID, QC passed, temperature, and coordinates:
-   `python -m weatheredge.pws_live_activation --airport FACT`
-4. Start the continuous METAR, market, and enabled-PWS collectors:
-   `python -m weatheredge.live_runner`
-5. Open the local dashboard at `http://127.0.0.1:8420` if the dashboard server is started separately by your existing workflow.
+## Start WeatherEdge live on antiX Linux
+From the repository root (the folder containing this README), pull the latest `main` branch:
 
-Without `WEATHER_UNDERGROUND_API_KEY`, the live PWS API cannot be queried; the public METAR/market collectors can still run. The activation command defaults to FACT to avoid sending 65 station requests at once. After checking results, probe other supported WeatherEdge airport codes explicitly, for example `--airport SAEZ,LEMD,EGLC,KSEA`. Airport groups absent from the canonical market registry are skipped rather than assigned invented coordinates.
+```bash
+git pull origin main
+```
 
-The station list is a research aid, not a source of settlement observations. Nearby PWS are comparison inputs only; use the market's specified settlement source for final outcomes.
+To enable PWS probing, enter your Weather Underground / Weather Company API key without echoing it to the terminal, then export it for this session:
+
+```bash
+read -rsp 'Weather Company API key: ' WEATHER_UNDERGROUND_API_KEY; echo
+export WEATHER_UNDERGROUND_API_KEY
+```
+
+Then start the live collectors and dashboard together:
+
+```bash
+python -m weatheredge.go_live
+```
+
+The launcher initializes the database, seeds the watchlist, probes FACT candidates (IMATRO5 plus the existing IMATRO4 and IBELLV58 candidates when an API key is configured), and enables only stations whose current API response has the matching ID, recent timestamp, passing quality-control flag, temperature, and coordinates. It then starts the continuous METAR, market, and eligible PWS collectors plus the local dashboard at `http://127.0.0.1:8420`.
+
+Without an API key, METAR and market collection still start, but curated PWS candidates remain disabled and no PWS API observations are collected. Weather Company API access and quotas depend on the account/key; don't assume it is unlimited. Press Ctrl+C in the launcher terminal to stop both child processes. This is research/paper collection only; no market orders are placed.
+
+After FACT, probe other supported WeatherEdge airport codes explicitly with `python -m weatheredge.pws_live_activation --airport SAEZ,LEMD,EGLC,KSEA`. This only checks those airports' listed/previously researched candidates; airports absent from the canonical market registry are skipped rather than assigned invented coordinates.
+
+Nearby PWS stations are comparison inputs, not settlement sensors. Use the market's specified settlement source for final outcomes.
 
 ## Primary data sources
 - FACT METAR/SPECI and other airport METARs
