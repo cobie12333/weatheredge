@@ -1,8 +1,14 @@
-"""Discover PWS stations and seed the curated nearby-station watchlist."""
+"""Discover PWS candidates and seed the curated watchlist without auto-enabling them."""
+import json
+import logging
+import urllib.error
+
 from . import pws_api
 from .airports import AIRPORTS
 from .nearby_pws_watchlist import PWS_WATCHLIST
 from .db import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 def seed_watchlist(con):
@@ -46,7 +52,12 @@ def run():
 
         added = seeded
         for airport in AIRPORTS:
-            payload = pws_api.discover_near(airport["lat"], airport["lon"], key)
+            try:
+                payload = pws_api.discover_near(airport["lat"], airport["lon"], key)
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+                # A discovery outage or rejected key must not stop live METAR/market polling.
+                logger.warning("PWS discovery failed for %s: %s", airport["icao"], exc)
+                continue
             loc = payload.get("location") or {}
             ids = loc.get("stationId") or []
             for i, station_id in enumerate(ids):
@@ -72,7 +83,7 @@ def run():
                         "https://www.wunderground.com/dashboard/pws/" + station_id,
                         at("latitude"), at("longitude"), at("distanceKm"),
                         "qc_ok" if at("qcStatus") == 1 else "candidate",
-                        0, 1, "Auto-discovered; not a settlement sensor.",
+                        0, 0, "Auto-discovered candidate; verify with a live observation probe before collection.",
                     ),
                 )
                 added += 1
