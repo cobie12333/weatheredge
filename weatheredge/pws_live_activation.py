@@ -127,7 +127,7 @@ def activate_airport(airport_icao, api_key, con, now=None):
         return 0
 
     activated = 0
-    for station_id in station_ids
+    for station_id in station_ids:
         try:
             payload = pws_api.current(station_id, api_key)
             observations = payload.get("observations") or []
