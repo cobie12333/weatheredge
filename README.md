@@ -7,6 +7,11 @@ Research pipeline: SAWS + FACT METAR/SPECI + nearby PWS + Windy spatial layer + 
 ## Status
 This repository is the source-code handoff. Secrets, `.env`, runtime logs, SQLite databases, generated analysis outputs, and caches are intentionally excluded from Git.
 
+## Nearby PWS watchlist
+The manually curated watchlist is in `weatheredge/nearby_pws_watchlist.py` and contains 65 station IDs grouped by the airport/city codes from the supplied research list. The discovery job seeds these candidates into the `pws_station` database table even when no Weather Company API key is configured.
+
+Watchlist entries start with `verified=0` and `enabled=0`; no coordinates, distance, online status, or feed availability are assumed. Confirm each station and its observation feed before enabling live collection. The list is a research aid, not a source of settlement observations.
+
 ## Primary data sources
 - SAWS/AfriGIS — South African forecasts and observations
 - FACT METAR/SPECI
