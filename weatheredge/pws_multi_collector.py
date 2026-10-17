@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Collect live Weather Underground PWS observations when an API key is configured.
-
-Only stations with enabled=1 are queried. Curated watchlist candidates remain
-disabled unless a live probe explicitly verifies them. The documented Weather
-Company PWS endpoint is used.
-"""
+"""Collect live PWS observations only from stations passing the live activation probe."""
 
 import json
 import os
@@ -101,12 +96,12 @@ def run():
         stations = con.execute(
             """SELECT station_id, airport_icao, latitude, longitude, distance_km
                FROM pws_station
-               WHERE enabled = 1
+               WHERE enabled = 1 AND verified = 1 AND status = 'live_verified'
                ORDER BY distance_km"""
         ).fetchall()
 
         if not stations:
-            logger.info("No enabled PWS stations; collector is idle")
+            logger.info("No live-verified PWS stations; collector is idle")
             log_collection_attempt(con, "pws_multi", True, rows_written=0)
             return 0
 
