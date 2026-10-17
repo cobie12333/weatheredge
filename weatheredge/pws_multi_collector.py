@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Collect live Weather Underground PWS observations when an API key is configured.
 
-All registry entries with enabled=1 are queried; verified is a research/quality flag, not a data-collection gate. The provider's documented
-documented Weather Company PWS endpoints are used; no undocumented web endpoint is assumed.
+Only stations with enabled=1 are queried. Curated watchlist candidates remain
+disabled unless a live probe explicitly verifies them. The documented Weather
+Company PWS endpoint is used.
 """
 
 import json
@@ -33,23 +34,33 @@ def _iso_from_epoch(value):
         return None
     try:
         return datetime.fromtimestamp(float(value), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except (TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError, OSError):
         return None
 
 
+def _first(mapping, *keys):
+    for key in keys:
+        if mapping.get(key) is not None:
+            return mapping[key]
+    return None
+
+
 def _observation_to_row(obs, station):
-    metric = obs.get("metric") or obs.get("imperial") or {}
-    obs_time = obs.get("epoch") or obs.get("obsTimeUtc") or obs.get("obsTimeLocal")
+    metric = obs.get("metric") or obs.get("metric_si") or obs.get("imperial") or {}
+    obs_time = _first(obs, "epoch", "obsTimeUtc", "obsTimeLocal")
     if isinstance(obs_time, str):
         obs_time = obs_time.replace("+00:00", "Z")
     else:
         obs_time = _iso_from_epoch(obs_time)
 
-    temp = _num(metric.get("tempAvg") if "tempAvg" in metric else metric.get("temp"))
-    humidity = _num(obs.get("humidityAvg") if "humidityAvg" in obs else obs.get("humidity"))
-    wind_dir = _num(obs.get("winddirAvg") if "winddirAvg" in obs else obs.get("winddir"))
-    wind_speed = _num(metric.get("windspeedAvg") if "windspeedAvg" in metric else metric.get("windspeed"))
-    pressure = _num(metric.get("pressureAvg") if "pressureAvg" in metric else metric.get("pressure"))
+    temp = _num(_first(metric, "temp", "tempAvg"))
+    humidity = _num(_first(obs, "humidityAvg", "humidity"))
+    wind_dir = _num(_first(obs, "winddirAvg", "winddir"))
+    # units=m is requested below, so wind speed arrives in km/h. The database
+    # column is knots; convert rather than silently recording the wrong unit.
+    wind_speed_kmh = _num(_first(metric, "windSpeed", "windspeed", "windSpeedAvg", "windspeedAvg"))
+    wind_speed_kt = wind_speed_kmh / 1.852 if wind_speed_kmh is not None else None
+    pressure = _num(_first(metric, "pressureAvg", "pressure"))
 
     return {
         "station_id": station["station_id"],
@@ -60,9 +71,9 @@ def _observation_to_row(obs, station):
         "distance_km": station["distance_km"],
         "temp_c": temp,
         "humidity": humidity,
-        "dewpoint_c": _num(metric.get("dewpt")),
+        "dewpoint_c": _num(_first(metric, "dewpt", "dewPoint")),
         "wind_dir_deg": wind_dir,
-        "wind_speed_kt": wind_speed,
+        "wind_speed_kt": wind_speed_kt,
         "pressure_hpa": pressure,
     }
 
@@ -95,7 +106,7 @@ def run():
         ).fetchall()
 
         if not stations:
-            logger.info("No enabled verified PWS stations; collector is idle")
+            logger.info("No enabled PWS stations; collector is idle")
             log_collection_attempt(con, "pws_multi", True, rows_written=0)
             return 0
 
@@ -139,7 +150,7 @@ def run():
                         ),
                     )
                     written += int(cur.rowcount > 0)
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
                 failures.append(f'{station["station_id"]}: {exc}')
 
         con.commit()
