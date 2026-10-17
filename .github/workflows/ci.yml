@@ -62,19 +62,46 @@ jobs:
                          and r["distance_km"] is None for r in rows)
               con.close()
           PY
-      - name: PWS collector parser smoke test
+      - name: PWS collector parser and unit smoke test
         run: |
           python - <<'PY'
           from weatheredge import pws_multi_collector
           row = pws_multi_collector._observation_to_row(
               {"epoch": 1770000000, "humidity": 55, "winddir": 180,
-               "metric": {"temp": 24.5, "dewpt": 14.0, "windspeed": 5.0, "pressure": 1012.3}},
+               "metric": {"temp": 24.5, "dewpt": 14.0, "windSpeed": 9.26, "pressure": 1012.3}},
               {"station_id":"TEST1","airport_icao":"FACT","latitude":-33.97,
                "longitude":18.60,"distance_km":1.0})
           assert row["temp_c"] == 24.5
           assert row["dewpoint_c"] == 14.0
-          assert row["wind_speed_kt"] == 5.0
+          assert abs(row["wind_speed_kt"] - 5.0) < 1e-9, row["wind_speed_kt"]
           assert row["obs_time"].endswith("Z")
+          PY
+      - name: PWS live activation quality gate
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from weatheredge.pws_live_activation import validate_observation
+
+          now = datetime.now(timezone.utc)
+          good = {
+              "stationID": "IMATRO5",
+              "qcStatus": 1,
+              "epoch": int(now.timestamp()),
+              "lat": -33.986,
+              "lon": 18.601,
+              "metric": {"temp": 18.2},
+          }
+          verified, reason = validate_observation("IMATRO5", "FACT", good, now=now)
+          assert reason is None, reason
+          assert verified["temp_c"] == 18.2
+          assert verified["distance_km"] > 0
+
+          bad_qc = dict(good, qcStatus=0)
+          assert validate_observation("IMATRO5", "FACT", bad_qc, now=now)[1] == "quality_control_not_passed"
+          wrong_id = dict(good, stationID="OTHER")
+          assert validate_observation("IMATRO5", "FACT", wrong_id, now=now)[1] == "station_id_mismatch"
+          stale = dict(good, epoch=int(now.timestamp()) - 7200)
+          assert validate_observation("IMATRO5", "FACT", stale, now=now)[1] == "observation_stale"
           PY
       - name: Live runner import smoke test
         run: |
