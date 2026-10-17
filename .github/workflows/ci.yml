@@ -15,20 +15,26 @@ jobs:
           python-version: "3.12"
       - name: Compile Python
         run: python -m compileall -q weatheredge
-      - name: Fresh database smoke test
+      - name: Fresh database and nearby PWS watchlist smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
           import os
           import tempfile
-          import db
+          import weatheredge.db as db
+          from weatheredge.nearby_pws_watchlist import PWS_WATCHLIST
+          from weatheredge.pws_discovery import seed_watchlist
+
+          assert len(PWS_WATCHLIST) == 65
+          ids = [station["station_id"] for station in PWS_WATCHLIST]
+          assert len(ids) == len(set(ids)), "watchlist contains duplicate IDs"
+          assert all(not station["enabled"] for station in PWS_WATCHLIST)
 
           with tempfile.TemporaryDirectory() as d:
               db.DB_PATH = os.path.join(d, "weatheredge.db")
-              db.SCHEMA_PATH = os.path.abspath("schema.sql")
+              db.SCHEMA_PATH = os.path.abspath("weatheredge/schema.sql")
               db._SCHEMA_READY = False
               db.init_schema()
-              con = db.get_connection(readonly=True)
+              con = db.get_connection()
               tables = {r["name"] for r in con.execute(
                   "select name from sqlite_master where type='table'"
               )}
@@ -42,13 +48,24 @@ jobs:
               }
               missing = required - tables
               assert not missing, missing
+
+              inserted = seed_watchlist(con)
+              assert inserted == 65, inserted
+              assert seed_watchlist(con) == 0, "watchlist seed is not idempotent"
+              rows = con.execute(
+                  "SELECT station_id, verified, enabled, latitude, longitude, distance_km "
+                  "FROM pws_station"
+              ).fetchall()
+              assert len(rows) == 65, len(rows)
+              assert all(r["verified"] == 0 and r["enabled"] == 0 for r in rows)
+              assert all(r["latitude"] is None and r["longitude"] is None
+                         and r["distance_km"] is None for r in rows)
               con.close()
           PY
       - name: PWS collector parser smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
-          import pws_multi_collector
+          from weatheredge import pws_multi_collector
           row = pws_multi_collector._observation_to_row(
               {"epoch": 1770000000, "humidity": 55, "winddir": 180,
                "metric": {"temp": 24.5, "dewpt": 14.0, "windspeed": 5.0, "pressure": 1012.3}},
@@ -61,16 +78,14 @@ jobs:
           PY
       - name: Live runner import smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
-          import live_runner
+          from weatheredge import live_runner
           assert live_runner._minutes_for_market({"tz":"Africa/Johannesburg"}) in (15, 60)
           PY
       - name: Dashboard render smoke test
         run: |
-          cd weatheredge
           python - <<'PY'
-          import dashboard
+          from weatheredge import dashboard
           html = dashboard.render([
               {
                   "icao":"FACT","city":"Cape Town","country":"ZA",
@@ -84,4 +99,5 @@ jobs:
           ])
           assert "<!doctype html>" in html
           assert "function apply()" in html
+          assert "function fillAirportSelect(){" in html
           PY
