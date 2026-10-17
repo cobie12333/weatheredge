@@ -7,14 +7,28 @@ Research pipeline: SAWS + FACT METAR/SPECI + nearby PWS + Windy spatial layer + 
 ## Status
 This repository is the source-code handoff. Secrets, `.env`, runtime logs, SQLite databases, generated analysis outputs, and caches are intentionally excluded from Git.
 
-## Nearby PWS watchlist
-The manually curated watchlist is in `weatheredge/nearby_pws_watchlist.py` and contains 65 station IDs grouped by the airport/city codes from the supplied research list. The discovery job seeds these candidates into the `pws_station` database table even when no Weather Company API key is configured.
+## Nearby PWS watchlist and live activation
+The manually curated watchlist is in `weatheredge/nearby_pws_watchlist.py` and contains 65 station IDs grouped by the airport/city codes from the supplied research list. Discovery seeds candidates into the `pws_station` database even without an API key.
 
-Watchlist entries start with `verified=0` and `enabled=0`; no coordinates, distance, online status, or feed availability are assumed. Confirm each station and its observation feed before enabling live collection. The list is a research aid, not a source of settlement observations.
+New watchlist entries start with `verified=0` and `enabled=0`. Coordinates, distance, online status, and feed availability are not assumed.
+
+### Start the live collectors on the laptop
+1. Pull the latest `main` branch.
+2. Set the Weather Underground / Weather Company API key in the shell environment; do not put it in source code, a commit, or the database:
+   `export WEATHER_UNDERGROUND_API_KEY='your-key'`
+3. From the repository root, probe FACT's curated candidates (currently IMATRO5) and enable only if the authenticated API returns a recent observation with matching station ID, QC passed, temperature, and coordinates:
+   `python -m weatheredge.pws_live_activation --airport FACT`
+4. Start the continuous METAR, market, and enabled-PWS collectors:
+   `python -m weatheredge.live_runner`
+5. Open the local dashboard at `http://127.0.0.1:8420` if the dashboard server is started separately by your existing workflow.
+
+Without `WEATHER_UNDERGROUND_API_KEY`, the live PWS API cannot be queried; the public METAR/market collectors can still run. The activation command defaults to FACT to avoid sending 65 station requests at once. After checking results, probe other supported WeatherEdge airport codes explicitly, for example `--airport SAEZ,LEMD,EGLC,KSEA`. Airport groups absent from the canonical market registry are skipped rather than assigned invented coordinates.
+
+The station list is a research aid, not a source of settlement observations. Nearby PWS are comparison inputs only; use the market's specified settlement source for final outcomes.
 
 ## Primary data sources
+- FACT METAR/SPECI and other airport METARs
 - SAWS/AfriGIS — South African forecasts and observations
-- FACT METAR/SPECI
 - Weather Company PWS API
 - Windy Maps/Stations APIs
 - Polymarket Gamma/CLOB
