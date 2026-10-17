@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ingest The Weather Company PWS rapid 24-hour history."""
+"""Ingest rapid PWS history only for live-verified, enabled stations."""
 
 import json
 import os
@@ -36,7 +36,7 @@ def run():
     try:
         stations = con.execute(
             """SELECT station_id, airport_icao, latitude, longitude, distance_km
-               FROM pws_station WHERE enabled=1 ORDER BY distance_km"""
+               FROM pws_station WHERE enabled=1 AND verified=1 AND status='live_verified' ORDER BY distance_km"""
         ).fetchall()
         if not stations:
             log_collection_attempt(con, "pws_rapid", True, rows_written=0)
@@ -53,7 +53,7 @@ def run():
             try:
                 payload = rapid_1day(station["station_id"], key)
                 for obs in payload.get("observations") or []:
-                    metric = obs.get("metric") or {}
+                    metric = obs.get("metric") or obs.get("metric_si") or {}
                     t = _obs_time(obs)
                     if not t:
                         continue
@@ -73,14 +73,14 @@ def run():
                             station["station_id"], station["airport_icao"],
                             utc_now_iso(), t, station["latitude"],
                             station["longitude"], station["distance_km"],
-                            _num(metric.get("tempAvg")),
+                            _num(metric.get("tempAvg") if metric.get("tempAvg") is not None else metric.get("temp")),
                             _num(obs.get("humidityAvg")),
-                            _num(metric.get("dewptAvg")),
+                            _num(metric.get("dewptAvg") if metric.get("dewptAvg") is not None else metric.get("dewpt")),
                             _num(obs.get("winddirAvg")),
-                            _num(metric.get("windspeedAvg")),
+                            _num(metric.get("windSpeedAvg") if metric.get("windSpeedAvg") is not None else metric.get("windspeedAvg")) / 1.852 if (metric.get("windSpeedAvg") is not None or metric.get("windspeedAvg") is not None) else None,
                             _num(metric.get("pressureAvg")),
                             "weather_company_pws_rapid",
-                            1 if obs.get("qcStatus", 1) == 1 else 0,
+                            1 if str(obs.get("qcStatus", 1)) == "1" else 0,
                             json.dumps(obs),
                         ),
                     )
