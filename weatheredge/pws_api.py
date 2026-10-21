@@ -2,11 +2,12 @@
 """Small dependency-free client for The Weather Company PWS APIs.
 
 The API key is read from WEATHER_UNDERGROUND_API_KEY for compatibility with
-the existing WeatherEdge deployment.
+the existing WeatherEdge deployment. Never include the key in logs/errors.
 """
 
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -22,8 +23,16 @@ def _get(base, path, params):
         f"{base}{path}?{query}",
         headers={"User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
+            # Some station/endpoint combinations legitimately return HTTP 204.
+            body = resp.read().decode("utf-8", errors="replace")
+            if resp.status == 204 or not body.strip():
+                return {"observations": []}
+            return json.loads(body)
+    except urllib.error.HTTPError as exc:
+        # urllib's default exception string contains the full URL, including apiKey.
+        raise RuntimeError(f"Weather Company API HTTP {exc.code} for {path}") from None
 
 
 def api_key():
