@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
-"""Collect live Weather Underground PWS observations when an API key is configured.
+"""Collect Weather Company PWS 24-hour observations into the canonical PWS table.
 
-All registry entries with enabled=1 are queried; verified is a research/quality flag, not a data-collection gate. The provider's documented
-documented Weather Company PWS endpoints are used; no undocumented web endpoint is assumed.
+All registry entries with enabled=1 are queried. The verified flag is a
+research-quality flag, not a collection gate. API credentials are never logged.
 """
 
 import json
 import os
 import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 
-from .config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
 from .db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
+from .pws_api import rapid_1day
 
 logger = setup_logger("pws_multi_collector")
-WU_URL = "https://api.weather.com/v2/pws/observations/all/1day"
 
 
 def _num(value):
@@ -39,67 +36,43 @@ def _iso_from_epoch(value):
 
 def _observation_to_row(obs, station):
     metric = obs.get("metric") or obs.get("imperial") or {}
-    obs_time = obs.get("epoch") or obs.get("obsTimeUtc") or obs.get("obsTimeLocal")
+    obs_time = obs.get("obsTimeUtc") or obs.get("epoch") or obs.get("obsTimeLocal")
     if isinstance(obs_time, str):
         obs_time = obs_time.replace("+00:00", "Z")
     else:
         obs_time = _iso_from_epoch(obs_time)
 
-    temp = _num(metric.get("tempAvg") if "tempAvg" in metric else metric.get("temp"))
-    humidity = _num(obs.get("humidityAvg") if "humidityAvg" in obs else obs.get("humidity"))
-    wind_dir = _num(obs.get("winddirAvg") if "winddirAvg" in obs else obs.get("winddir"))
-    wind_speed = _num(metric.get("windspeedAvg") if "windspeedAvg" in metric else metric.get("windspeed"))
-    pressure = _num(metric.get("pressureAvg") if "pressureAvg" in metric else metric.get("pressure"))
-
     return {
         "station_id": station["station_id"],
         "airport_icao": station["airport_icao"],
         "obs_time": obs_time,
-        "latitude": station["latitude"],
-        "longitude": station["longitude"],
+        "latitude": _num(obs.get("lat")) or station["latitude"],
+        "longitude": _num(obs.get("lon")) or station["longitude"],
         "distance_km": station["distance_km"],
-        "temp_c": temp,
-        "humidity": humidity,
-        "dewpoint_c": _num(metric.get("dewpt")),
-        "wind_dir_deg": wind_dir,
-        "wind_speed_kt": wind_speed,
-        "pressure_hpa": pressure,
+        "temp_c": _num(metric.get("tempAvg") if "tempAvg" in metric else metric.get("temp")),
+        "humidity": _num(obs.get("humidityAvg") if "humidityAvg" in obs else obs.get("humidity")),
+        "dewpoint_c": _num(metric.get("dewptAvg") if "dewptAvg" in metric else metric.get("dewpt")),
+        "wind_dir_deg": _num(obs.get("winddirAvg") if "winddirAvg" in obs else obs.get("winddir")),
+        "wind_speed_kt": _num(metric.get("windspeedAvg") if "windspeedAvg" in metric else metric.get("windspeed")),
+        "pressure_hpa": _num(metric.get("pressureAvg") if "pressureAvg" in metric else metric.get("pressure")),
     }
 
 
-def fetch_station(station_id, api_key):
-    params = urllib.parse.urlencode({
-        "stationId": station_id,
-        "format": "json",
-        "units": "m",
-        "numericPrecision": "decimal",
-        "apiKey": api_key,
-    })
-    req = urllib.request.Request(
-        f"{WU_URL}?{params}",
-        headers={"User-Agent": USER_AGENT},
-    )
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
 def run():
-    api_key = os.getenv("WEATHER_UNDERGROUND_API_KEY")
+    key = os.getenv("WEATHER_UNDERGROUND_API_KEY")
     con = get_connection()
     try:
         stations = con.execute(
             """SELECT station_id, airport_icao, latitude, longitude, distance_km
-               FROM pws_station
-               WHERE enabled = 1
-               ORDER BY distance_km"""
+               FROM pws_station WHERE enabled=1 ORDER BY distance_km"""
         ).fetchall()
 
         if not stations:
-            logger.info("No enabled verified PWS stations; collector is idle")
+            logger.info("No enabled PWS stations; collector is idle")
             log_collection_attempt(con, "pws_multi", True, rows_written=0)
             return 0
 
-        if not api_key:
+        if not key:
             msg = "WEATHER_UNDERGROUND_API_KEY is not configured"
             logger.warning(msg)
             log_collection_attempt(con, "pws_multi", False, error_msg=msg)
@@ -107,13 +80,13 @@ def run():
 
         written = 0
         failures = []
-        for station_row in stations:
-            station = dict(station_row)
+        for sr in stations:
+            station = dict(sr)
             try:
-                payload = fetch_station(station["station_id"], api_key)
+                payload = rapid_1day(station["station_id"], key)
                 observations = payload.get("observations") or []
                 if not observations:
-                    failures.append(f'{station["station_id"]}: no observations')
+                    failures.append(f'{station["station_id"]}: API returned no observations')
                     continue
 
                 for obs in observations:
@@ -139,19 +112,22 @@ def run():
                         ),
                     )
                     written += int(cur.rowcount > 0)
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-                failures.append(f'{station["station_id"]}: {exc}')
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+                # Avoid printing urllib exception URLs: they can contain the API key.
+                detail = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+                failures.append(f'{station["station_id"]}: {detail}')
 
         con.commit()
-        success = not failures
         msg = "; ".join(failures) if failures else None
-        log_collection_attempt(con, "pws_multi", success, rows_written=written, error_msg=msg)
+        log_collection_attempt(con, "pws_multi", not failures, rows_written=written, error_msg=msg)
         logger.info("stations=%s written=%s failures=%s", len(stations), written, len(failures))
+        if failures:
+            logger.warning("PWS station issues: %s", msg)
         return written
     except Exception as exc:
         con.rollback()
-        logger.exception("PWS collector failure")
-        log_collection_attempt(con, "pws_multi", False, error_msg=str(exc))
+        logger.exception("PWS collector failure (%s)", type(exc).__name__)
+        log_collection_attempt(con, "pws_multi", False, error_msg=type(exc).__name__)
         return 0
     finally:
         con.close()
