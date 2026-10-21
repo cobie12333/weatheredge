@@ -6,7 +6,6 @@ import os
 import urllib.error
 from datetime import datetime, timezone
 
-from .config.settings import HTTP_TIMEOUT_SECONDS
 from .db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
 from .pws_api import rapid_1day
 
@@ -52,14 +51,15 @@ def run():
             station = dict(sr)
             try:
                 payload = rapid_1day(station["station_id"], key)
-                for obs in payload.get("observations") or []:
-                    metric = obs.get("metric") or {}
+                observations = payload.get("observations") or []
+                if not observations:
+                    failures.append(f'{station["station_id"]}: API returned no observations')
+                    continue
+                for obs in observations:
                     t = _obs_time(obs)
                     if not t:
                         continue
-                    # Rapid records are reporting-interval aggregates; tempAvg
-                    # is the time-series value, while high/low remain available
-                    # in raw_payload for later max-temperature analytics.
+                    metric = obs.get("metric") or {}
                     cur = con.execute(
                         """INSERT OR IGNORE INTO pws_obs_multi
                            (station_id, airport_icao, fetched_at, obs_time,
@@ -67,8 +67,7 @@ def run():
                             dewpoint_c, wind_dir_deg, wind_speed_kt,
                             pressure_hpa, source, is_valid, freshness_min,
                             issues, raw_payload)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                                   ?,NULL,NULL,?)""",
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?)""",
                         (
                             station["station_id"], station["airport_icao"],
                             utc_now_iso(), t, station["latitude"],
@@ -85,19 +84,23 @@ def run():
                         ),
                     )
                     written += int(cur.rowcount > 0)
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-                failures.append(f'{station["station_id"]}: {exc}')
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+                detail = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+                failures.append(f'{station["station_id"]}: {detail}')
+
         con.commit()
         msg = "; ".join(failures) if failures else None
         log_collection_attempt(con, "pws_rapid", not failures,
                                rows_written=written, error_msg=msg)
         logger.info("stations=%s written=%s failures=%s",
                     len(stations), written, len(failures))
+        if failures:
+            logger.warning("PWS station issues: %s", msg)
         return written
     except Exception as exc:
         con.rollback()
-        logger.exception("PWS rapid collector failure")
-        log_collection_attempt(con, "pws_rapid", False, error_msg=str(exc))
+        logger.exception("PWS rapid collector failure (%s)", type(exc).__name__)
+        log_collection_attempt(con, "pws_rapid", False, error_msg=type(exc).__name__)
         return 0
     finally:
         con.close()
