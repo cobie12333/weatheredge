@@ -220,3 +220,20 @@ CREATE TABLE IF NOT EXISTS forecast_history (
     raw_payload TEXT,
     UNIQUE(valid_time, lead_hours, model, source)
 );
+
+-- TypeSafe Jev structured weather probabilities
+CREATE TABLE IF NOT EXISTS jev_prediction (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    airport_icao TEXT NOT NULL,
+    market_date TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    model TEXT NOT NULL,
+    choice TEXT,
+    confidence REAL,
+    probabilities_json TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    usage_json TEXT,
+    UNIQUE(airport_icao, market_date, fetched_at, model)
+);
+CREATE INDEX IF NOT EXISTS idx_jev_prediction_airport_date
+    ON jev_prediction(airport_icao, market_date, fetched_at DESC);
