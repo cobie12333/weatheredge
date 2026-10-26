@@ -16,7 +16,7 @@ from .config.settings import HTTP_TIMEOUT_SECONDS, USER_AGENT
 from .db import get_connection, log_collection_attempt, setup_logger, utc_now_iso
 
 logger = setup_logger("pws_multi_collector")
-WU_URL = "https://api.weather.com/v2/pws/observations/current"
+WU_URL = "https://api.weather.com/v2/pws/observations/all/1day"
 
 
 def _num(value):
