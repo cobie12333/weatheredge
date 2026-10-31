@@ -103,12 +103,91 @@ jobs:
           stale = dict(good, epoch=int(now.timestamp()) - 7200)
           assert validate_observation("IMATRO5", "FACT", stale, now=now)[1] == "observation_stale"
           PY
-      - name: Live runner and one-command launcher import smoke test
+      - name: Live runner failure isolation and launcher import smoke test
         run: |
           python - <<'PY'
           from weatheredge import live_runner, go_live
+
           assert live_runner._minutes_for_market({"tz":"Africa/Johannesburg"}) in (15, 60)
           assert callable(go_live.main)
+
+          calls = []
+          class FakeConnection:
+              def close(self):
+                  calls.append("closed")
+
+          original_get_connection = live_runner.get_connection
+          original_log_attempt = live_runner.log_collection_attempt
+          live_runner.get_connection = lambda: FakeConnection()
+          live_runner.log_collection_attempt = lambda con, name, success, **kw: calls.append(
+              (name, success, kw.get("error_msg", ""))
+          )
+          try:
+              assert live_runner._run_collector("healthy", lambda: 7) == 7
+
+              def broken_collector():
+                  raise RuntimeError("simulated collector failure")
+
+              assert live_runner._run_collector("broken", broken_collector) == 0
+              assert ("broken", False, "Unhandled collector exception: RuntimeError: simulated collector failure") in calls
+              assert calls[-1] == "closed"
+          finally:
+              live_runner.get_connection = original_get_connection
+              live_runner.log_collection_attempt = original_log_attempt
+          PY
+      - name: FACT lag analysis reads canonical multi-airport tables
+        run: |
+          python - <<'PY'
+          import os
+          import sqlite3
+          import tempfile
+          from weatheredge.analysis import lag_analysis
+
+          with tempfile.TemporaryDirectory() as d:
+              con = sqlite3.connect(os.path.join(d, "test.db"))
+              con.row_factory = sqlite3.Row
+              with open("weatheredge/schema.sql", encoding="utf-8") as f:
+                  con.executescript(f.read())
+
+              con.execute(
+                  """INSERT INTO metar_multi
+                     (station_id, fetched_at, obs_time, receipt_time, temp_c,
+                      raw_metar, report_type, source)
+                     VALUES ('FACT', '2026-10-31T10:05:00Z',
+                             '2026-10-31T10:00:00Z', '2026-10-31T10:01:00Z',
+                             24, 'FACT 311000Z 18010KT 9999 FEW020 24/12 Q1015',
+                             'METAR', 'aviationweather.gov')"""
+              )
+              con.execute(
+                  """INSERT INTO market_price_multi
+                     (station_id, market_date, fetched_at, bucket_label,
+                      yes_price_cents, no_price_cents, volume_usd, raw_payload)
+                     VALUES ('FACT', '2026-10-31', '2026-10-31T10:06:00Z',
+                             '24°C', 85, 15, 100, '{}')"""
+              )
+              con.execute(
+                  """INSERT INTO collection_log
+                     (attempted_at, collector, success, rows_written)
+                     VALUES ('2026-10-31T10:05:00Z', 'multi_metar', 1, 1)"""
+              )
+              con.execute(
+                  """INSERT INTO collection_log
+                     (attempted_at, collector, success, rows_written)
+                     VALUES ('2026-10-31T10:06:00Z', 'market:FACT', 1, 1)"""
+              )
+              lag_analysis.install_analysis_views(con)
+
+              daily = lag_analysis.get_daily_max_from_metar(con, "2026-10-31")
+              assert daily["max_temp_c"] == 24
+              assert daily["n_obs"] == 1
+              snapshot = lag_analysis.get_latest_market_snapshot(con, "2026-10-31")
+              assert snapshot["buckets"][0]["bucket_label"] == "24°C"
+              health = lag_analysis.compute_collection_health_for_day(con, "2026-10-31")
+              assert health["metar"]["successes"] == 1
+              assert health["market"]["successes"] == 1
+              latency = lag_analysis.compute_collector_latency_minutes(con, "2026-10-31")
+              assert latency["median_latency_min"] == 5
+              con.close()
           PY
       - name: Dashboard render smoke test
         run: |

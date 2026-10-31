@@ -19,8 +19,7 @@ import statistics
 import sys
 from datetime import datetime, timezone
 
-sys.path.insert(0, ".")
-from db import get_connection
+from ..db import get_connection
 
 # The exact moment the collector-latency bug was fixed (hours=1 -> hours=3
 # query window). Any day's data collected before this is PRE-FIX and must
@@ -30,6 +29,37 @@ from db import get_connection
 # this to make more days count as "clean" — that would be exactly the
 # kind of goalpost-moving the research discipline here is meant to prevent.
 COLLECTOR_FIX_TIME = "2026-07-08T20:45:00Z"
+
+
+def install_analysis_views(con: sqlite3.Connection) -> None:
+    """Create connection-local views over canonical FACT data, with legacy fallback."""
+    con.executescript("""
+        CREATE TEMP VIEW IF NOT EXISTS analysis_metar_obs AS
+        SELECT fetched_at, obs_time, receipt_time, temp_c, raw_metar, report_type,
+               CASE WHEN source = 'aviationweather.gov' THEN 'live' ELSE source END AS source
+        FROM metar_multi WHERE station_id = 'FACT'
+        UNION ALL
+        SELECT old.fetched_at, old.obs_time, old.receipt_time, old.temp_c,
+               old.raw_metar, old.report_type, old.source
+        FROM metar_obs AS old
+        WHERE NOT EXISTS (SELECT 1 FROM metar_multi AS new
+                          WHERE new.station_id = 'FACT' AND new.obs_time = old.obs_time);
+
+        CREATE TEMP VIEW IF NOT EXISTS analysis_market_price AS
+        SELECT fetched_at, market_date, bucket_label, yes_price_cents,
+               no_price_cents, volume_usd, raw_payload, source
+        FROM market_price_multi WHERE station_id = 'FACT'
+        UNION ALL
+        SELECT old.fetched_at, old.market_date, old.bucket_label,
+               old.yes_price_cents, old.no_price_cents, old.volume_usd,
+               old.raw_payload, old.source
+        FROM market_price AS old
+        WHERE NOT EXISTS (SELECT 1 FROM market_price_multi AS new
+                          WHERE new.station_id = 'FACT'
+                            AND new.fetched_at = old.fetched_at
+                            AND new.market_date = old.market_date
+                            AND new.bucket_label = old.bucket_label);
+    """)
 
 
 def compute_information_edge_for_day(con: sqlite3.Connection, market_date: str) -> dict:
@@ -54,7 +84,7 @@ def compute_information_edge_for_day(con: sqlite3.Connection, market_date: str) 
     """
     rows = con.execute(
         """
-        SELECT obs_time, receipt_time, fetched_at, report_type FROM metar_obs
+        SELECT obs_time, receipt_time, fetched_at, report_type FROM analysis_metar_obs
         WHERE obs_time LIKE ? AND obs_time IS NOT NULL
         ORDER BY obs_time ASC
         """,
@@ -133,7 +163,7 @@ def compute_collector_latency_minutes(con: sqlite3.Connection, market_date: str)
     """
     rows = con.execute(
         """
-        SELECT obs_time, fetched_at FROM metar_obs
+        SELECT obs_time, fetched_at FROM analysis_metar_obs
         WHERE obs_time LIKE ? AND obs_time IS NOT NULL AND fetched_at IS NOT NULL
         AND source = 'live'
         """,
@@ -166,9 +196,9 @@ def compute_collection_health_for_day(con: sqlite3.Connection, market_date: str)
         rows = con.execute(
             """
             SELECT success FROM collection_log
-            WHERE collector = ? AND attempted_at LIKE ?
+            WHERE collector IN (?, ?) AND attempted_at LIKE ?
             """,
-            (collector, f"{market_date}%"),
+            (("metar", "multi_metar") if collector == "metar" else ("market", "market:FACT")) + (f"{market_date}%",),
         ).fetchall()
         attempts = len(rows)
         successes = sum(r["success"] for r in rows)
@@ -191,7 +221,7 @@ def count_speci_captured(con: sqlite3.Connection, market_date: str) -> int:
     """
     row = con.execute(
         """
-        SELECT COUNT(*) as n FROM metar_obs
+        SELECT COUNT(*) as n FROM analysis_metar_obs
         WHERE obs_time LIKE ? AND report_type = 'SPECI'
         """,
         (f"{market_date}%",),
@@ -220,7 +250,7 @@ def is_backfilled_day(con: sqlite3.Connection, market_date: str) -> bool:
     mislabeled with a reason that doesn't describe their actual data.
     """
     row = con.execute(
-        "SELECT COUNT(*) as n FROM metar_obs WHERE obs_time LIKE ? AND source = 'live'",
+        "SELECT COUNT(*) as n FROM analysis_metar_obs WHERE obs_time LIKE ? AND source = 'live'",
         (f"{market_date}%",),
     ).fetchone()
     return (row["n"] or 0) == 0
@@ -350,7 +380,7 @@ def classify_uncertainty_at_time(con: sqlite3.Connection, market_date: str, at_t
     rows = con.execute(
         """
         SELECT fetched_at, bucket_label, yes_price_cents
-        FROM market_price
+        FROM analysis_market_price
         WHERE market_date = ? AND fetched_at >= ?
         ORDER BY fetched_at ASC
         LIMIT 10
@@ -399,7 +429,7 @@ def get_daily_max_from_metar(con: sqlite3.Connection, market_date: str) -> dict:
     """
     rows = con.execute(
         """
-        SELECT obs_time, temp_c FROM metar_obs
+        SELECT obs_time, temp_c FROM analysis_metar_obs
         WHERE obs_time LIKE ?
         AND temp_c IS NOT NULL
         ORDER BY obs_time ASC
@@ -423,7 +453,7 @@ def get_market_price_history(con: sqlite3.Connection, market_date: str, bucket_l
     rows = con.execute(
         """
         SELECT fetched_at, yes_price_cents, no_price_cents, volume_usd
-        FROM market_price
+        FROM analysis_market_price
         WHERE market_date = ? AND bucket_label = ?
         ORDER BY fetched_at ASC
         """,
@@ -441,7 +471,7 @@ def find_leading_bucket_at_time(con: sqlite3.Connection, market_date: str, at_or
     rows = con.execute(
         """
         SELECT fetched_at, bucket_label, yes_price_cents
-        FROM market_price
+        FROM analysis_market_price
         WHERE market_date = ? AND fetched_at >= ?
         ORDER BY fetched_at ASC
         LIMIT ?
@@ -480,7 +510,7 @@ def compute_lag_for_day(con: sqlite3.Connection, market_date: str) -> dict:
     rows = con.execute(
         """
         SELECT fetched_at, bucket_label, yes_price_cents
-        FROM market_price
+        FROM analysis_market_price
         WHERE market_date = ? AND fetched_at >= ?
         ORDER BY fetched_at ASC
         """,
@@ -566,7 +596,7 @@ def get_raw_conditions_for_day(con: sqlite3.Connection, market_date: str) -> lis
     across many days. Does not draw conclusions about causation.
     """
     rows = con.execute(
-        "SELECT obs_time, temp_c, raw_metar, report_type FROM metar_obs "
+        "SELECT obs_time, temp_c, raw_metar, report_type FROM analysis_metar_obs "
         "WHERE obs_time LIKE ? ORDER BY obs_time ASC",
         (f"{market_date}%",),
     ).fetchall()
@@ -593,14 +623,14 @@ def get_latest_market_snapshot(con: sqlite3.Connection, market_date: str) -> dic
     only, no derived probability, no narrative.
     """
     latest = con.execute(
-        "SELECT fetched_at FROM market_price WHERE market_date = ? ORDER BY fetched_at DESC LIMIT 1",
+        "SELECT fetched_at FROM analysis_market_price WHERE market_date = ? ORDER BY fetched_at DESC LIMIT 1",
         (market_date,),
     ).fetchone()
     if not latest:
         return {"fetched_at": None, "buckets": []}
 
     buckets = con.execute(
-        "SELECT bucket_label, yes_price_cents, volume_usd FROM market_price "
+        "SELECT bucket_label, yes_price_cents, volume_usd FROM analysis_market_price "
         "WHERE market_date = ? AND fetched_at = ? ORDER BY yes_price_cents DESC",
         (market_date, latest["fetched_at"]),
     ).fetchall()
@@ -682,7 +712,7 @@ def print_raw_conditions(con: sqlite3.Connection, market_date: str) -> None:
 def list_available_market_dates(con: sqlite3.Connection) -> list:
     """All distinct market_date values collected so far."""
     rows = con.execute(
-        "SELECT DISTINCT market_date FROM market_price ORDER BY market_date ASC"
+        "SELECT DISTINCT market_date FROM analysis_market_price ORDER BY market_date ASC"
     ).fetchall()
     return [r["market_date"] for r in rows]
 
@@ -698,7 +728,7 @@ def collection_health_summary(con: sqlite3.Connection) -> dict:
         SELECT
             COUNT(*) as attempts,
             SUM(success) as successes
-        FROM collection_log WHERE collector = 'metar'
+        FROM collection_log WHERE collector IN ('metar', 'multi_metar')
         """
     ).fetchone()
 
@@ -707,7 +737,7 @@ def collection_health_summary(con: sqlite3.Connection) -> dict:
         SELECT
             COUNT(*) as attempts,
             SUM(success) as successes
-        FROM collection_log WHERE collector = 'market'
+        FROM collection_log WHERE collector IN ('market', 'market:FACT')
         """
     ).fetchone()
 
@@ -804,6 +834,7 @@ def main():
     args = parser.parse_args()
 
     con = get_connection()
+    install_analysis_views(con)
 
     if args.situation:
         print_situation_report(con, args.situation)
