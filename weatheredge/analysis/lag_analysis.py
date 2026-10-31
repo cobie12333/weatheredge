@@ -41,20 +41,20 @@ def install_analysis_views(con: sqlite3.Connection) -> None:
         UNION ALL
         SELECT old.fetched_at, old.obs_time, old.receipt_time, old.temp_c,
                old.raw_metar, old.report_type, old.source
-        FROM analysis_metar_obs AS old
+        FROM metar_obs AS old
         WHERE NOT EXISTS (SELECT 1 FROM metar_multi AS new
                           WHERE new.station_id = 'FACT' AND new.obs_time = old.obs_time);
 
         CREATE TEMP VIEW IF NOT EXISTS analysis_market_price AS
         SELECT fetched_at, market_date, bucket_label, yes_price_cents,
                no_price_cents, volume_usd, raw_payload, source
-        FROM analysis_market_price_multi WHERE station_id = 'FACT'
+        FROM market_price_multi WHERE station_id = 'FACT'
         UNION ALL
         SELECT old.fetched_at, old.market_date, old.bucket_label,
                old.yes_price_cents, old.no_price_cents, old.volume_usd,
                old.raw_payload, old.source
-        FROM analysis_market_price AS old
-        WHERE NOT EXISTS (SELECT 1 FROM analysis_market_price_multi AS new
+        FROM market_price AS old
+        WHERE NOT EXISTS (SELECT 1 FROM market_price_multi AS new
                           WHERE new.station_id = 'FACT'
                             AND new.fetched_at = old.fetched_at
                             AND new.market_date = old.market_date
