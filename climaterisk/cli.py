@@ -293,10 +293,17 @@ def market_check(con: sqlite3.Connection, weatheredge_db: str) -> dict:
     market.row_factory = sqlite3.Row
     try:
         rows = market.execute("""
-          SELECT bucket_label,yes_price_cents,MAX(fetched_at) AS snapshot_at
-          FROM market_price_multi WHERE station_id='FACT' AND market_date=?
-          GROUP BY bucket_label
-        """, (target,)).fetchall()
+          SELECT m.bucket_label,m.yes_price_cents,m.fetched_at AS snapshot_at
+          FROM market_price_multi m
+          JOIN (
+            SELECT bucket_label,MAX(fetched_at) AS latest
+            FROM market_price_multi
+            WHERE station_id='FACT' AND market_date=?
+            GROUP BY bucket_label
+          ) latest
+          ON latest.bucket_label=m.bucket_label AND latest.latest=m.fetched_at
+          WHERE m.station_id='FACT' AND m.market_date=?
+        """, (target, target)).fetchall()
     except sqlite3.Error as exc:
         return {"status": f"WeatherEdge market table unavailable: {exc}"}
     finally:
@@ -336,7 +343,7 @@ def report(con: sqlite3.Connection, weatheredge_db: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Cape Town ClimateRisk research MVP")
     parser.add_argument("--db", default=str(DB_DEFAULT), help="ClimateRisk SQLite database")
-    parser.add_argument("--weatheredge-db", default="../weatheredge/weatheredge.db",
+    parser.add_argument("--weatheredge-db", default="weatheredge/weatheredge.db",
                         help="Existing WeatherEdge SQLite database for FACT market snapshots")
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("fetch-weather")
