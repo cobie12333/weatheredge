@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -57,7 +58,8 @@ WEATHER_DOC = "https://open-meteo.com/en/docs/historical-weather-api"
 POLY_DOC = "https://institute.polymarket.com/data"
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(path: Path | str) -> sqlite3.Connection:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
@@ -129,7 +131,9 @@ def import_power(con: sqlite3.Connection, filename: str) -> int:
         reader = csv.DictReader(f)
         fields = {x.lower().strip(): x for x in (reader.fieldnames or [])}
         tcol = next((fields[k] for k in ("timestamp", "datetime", "date_time", "date") if k in fields), None)
-        dcol = next((fields[k] for k in ("demand_mw", "demand", "rsa contracted demand", "actual demand") if k in fields), None)
+        dcol = next((fields[k] for k in ("demand_mw", "rsa contracted demand", "actual demand", "demand") if k in fields), None)
+        if not dcol:
+            dcol = next((original for key, original in fields.items() if "demand" in key and "capacity" not in key), None)
         if not tcol or not dcol:
             raise ValueError("Power CSV needs timestamp/datetime and demand_mw/demand columns")
         for row in reader:
@@ -277,7 +281,7 @@ def market_check(con: sqlite3.Connection, weatheredge_db: str) -> dict:
     wx = con.execute("SELECT local_date,tmax_c FROM weather_daily WHERE tmax_c IS NOT NULL ORDER BY local_date").fetchall()
     if len(wx) < 35:
         return {"status": "Need at least 35 historical daily temperatures before estimating error probabilities."}
-    target = (date.today() + timedelta(days=1)).isoformat()
+    target = (datetime.now(ZoneInfo(TZ)).date() + timedelta(days=1)).isoformat()
     history = [float(r["tmax_c"]) for r in wx if r["local_date"] < target]
     if len(history) < 35:
         return {"status": "Insufficient history for tomorrow's forecast."}
@@ -293,16 +297,13 @@ def market_check(con: sqlite3.Connection, weatheredge_db: str) -> dict:
     market.row_factory = sqlite3.Row
     try:
         rows = market.execute("""
-          SELECT m.bucket_label,m.yes_price_cents,m.fetched_at AS snapshot_at
-          FROM market_price_multi m
-          JOIN (
-            SELECT bucket_label,MAX(fetched_at) AS latest
-            FROM market_price_multi
-            WHERE station_id='FACT' AND market_date=?
-            GROUP BY bucket_label
-          ) latest
-          ON latest.bucket_label=m.bucket_label AND latest.latest=m.fetched_at
-          WHERE m.station_id='FACT' AND m.market_date=?
+          SELECT bucket_label,yes_price_cents,fetched_at AS snapshot_at
+          FROM market_price_multi
+          WHERE station_id='FACT' AND market_date=?
+            AND fetched_at=(
+              SELECT MAX(fetched_at) FROM market_price_multi
+              WHERE station_id='FACT' AND market_date=?
+            )
         """, (target, target)).fetchall()
     except sqlite3.Error as exc:
         return {"status": f"WeatherEdge market table unavailable: {exc}"}
@@ -315,7 +316,7 @@ def market_check(con: sqlite3.Connection, weatheredge_db: str) -> dict:
     for row in rows:
         label = row["bucket_label"]
         import re
-        match = re.search(r"(-?\d+(?:\.\d+)?)", label or "")
+        match = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*°?\s*C?\s*", label or "", re.IGNORECASE)
         if not match: continue
         bucket = float(match.group(1))
         # Exact integer/half-degree bucket is approximated as +/-0.5C; range labels aren't inferred.
