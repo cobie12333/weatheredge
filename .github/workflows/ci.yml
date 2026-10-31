@@ -208,3 +208,8 @@ jobs:
           assert "function apply()" in html
           assert "function fillAirportSelect(){" in html
           PY
+
+      - name: ClimateRisk MVP compile and tests
+        run: |
+          python -m compileall -q climaterisk
+          python -m unittest discover -s climaterisk -p 'test_*.py' -v
