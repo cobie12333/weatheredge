@@ -50,3 +50,32 @@ Nearby PWS stations are comparison inputs, not settlement sensors. Use the marke
 
 ## Safety
 Paper trading only. Never commit API keys, wallet private keys, or other credentials.
+
+## RealityOS foundations (branch `reality-foundations`)
+
+Goal: show, with evidence, whether weather information predicts real-world consequences (electricity demand first, then dam levels) better than a simple baseline, and whether a simulated hedge reduces financial exposure. Paper and research only. No exchange, token or payment code.
+
+What was added (all standard library, no new dependencies):
+
+| Module | Purpose |
+|---|---|
+| `weatheredge/outcomes.py` | Daily-high labels. `provisional:` rows come from our own METAR (whole degrees, may differ from a market's settlement source). `--manual` stores a settlement-source value and always replaces a provisional one. Also mirrors FACT `metar_multi` rows into `metar_obs` so `lag_analysis` keeps receiving live data. |
+| `weatheredge/forecast_capture.py` | Stores Open-Meteo hourly forecasts with lead time in `forecast_history_multi` every 6 hours, so skill can be scored later. |
+| `weatheredge/evaluation.py` | MAE, Brier, reliability, interval coverage, block-bootstrap CIs, `compare()` verdicts, small linear models, hedge effectiveness. |
+| `weatheredge/demand_experiment.py` | Walk-forward test of weather vs calendar baselines on a daily demand CSV you assemble. |
+| `live_runner.py`, `go_live.py`, `market_collector.py` | Each collector call is isolated, crashes are logged to `collection_log`, and `go_live` restarts a crashed child with back-off. |
+| `tools/db_audit.py` | Read-only audit of a real database (row counts, collector success rates, METAR gaps, label coverage). |
+| `docs/REALITYOS_AUDIT.md` | Evidence-labelled technical audit of this repository. |
+
+Run the tests: `python -m unittest discover -s tests -t .`
+
+Audit your data first: `python tools/db_audit.py weatheredge/weatheredge.db`
+
+Weather vs demand test (needs a CSV you build from the Eskom Data Portal download and weather for the same place):
+
+    python -m weatheredge.demand_experiment --csv daily.csv --y-col peak_gw \
+        --date-col date --tmax-col tmax --tmin-col tmin --out report.md
+
+A model is reported as better only when the whole 95% confidence interval of its loss difference is below zero.
+
+Not yet verified live (the sandbox that wrote this could not reach external APIs): the Open-Meteo response parsing in `forecast_capture.py` is tested against a fixture shaped like the documented response. Check the first rows it writes. The Eskom file layout has not been seen; column names are therefore command-line options.

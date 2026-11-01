@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Collect Polymarket daily-high temperature market snapshots per airport."""
 
+import http.client
 import json
 import sys
 import urllib.error
@@ -78,7 +79,8 @@ def run(target_date: date = None, icao: str = "FACT") -> int:
     try:
         try:
             event = fetch_event(slug)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # OSError covers URLError, timeouts and connection resets; ValueError covers bad JSON.
             msg = f"Network error fetching event slug={slug}: {e}"
             logger.error(msg)
             log_collection_attempt(con, f"market:{icao}", False, error_msg=msg)

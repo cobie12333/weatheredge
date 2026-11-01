@@ -14,7 +14,9 @@ jobs:
         with:
           python-version: "3.12"
       - name: Compile Python
-        run: python -m compileall -q weatheredge
+        run: python -m compileall -q weatheredge tests
+      - name: Unit tests (outcomes, forecast capture, resilience, evaluation)
+        run: python -m unittest discover -s tests -t .
       - name: Fresh database and nearby PWS watchlist smoke test
         run: |
           python - <<'PY'
